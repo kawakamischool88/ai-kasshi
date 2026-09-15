@@ -31,7 +31,12 @@ yarn-error.log*
 .pnpm-debug.log*
 
 # env files (can opt-in for committing if needed)
+# 鍵の入ったファイルは絶対に commit しない。見本（.env.example）だけ許可する
 .env*
+!.env.example
+
+# Supabase CLI の一時ファイル
+supabase/.temp/
 
 # vercel
 .vercel

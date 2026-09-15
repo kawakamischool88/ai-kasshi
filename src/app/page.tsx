@@ -1,69 +1,106 @@
-import Image from "next/image";
+import { redirect } from "next/navigation";
+import { createClient } from "@/lib/supabase/server";
+import { saveProfile, signOut } from "./actions";
 
-export default function Home() {
+/**
+ * ログイン後の最小画面（Phase 1）。
+ * - 誰でログインしているか
+ * - 表示名とメモの保存（iPad の音声入力が保存まで通るかの確認用）
+ * - ログアウト
+ */
+export default async function Home({
+  searchParams,
+}: {
+  searchParams: Promise<{ saved?: string }>;
+}) {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
+
+  // RLS により、自分の行しか返らない
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("display_name, memo, updated_at")
+    .eq("id", user.id)
+    .maybeSingle();
+
+  const { saved } = await searchParams;
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+    <main className="mx-auto w-full max-w-2xl flex-1 px-5 py-8">
+      <header className="flex items-center justify-between border-b border-line pb-4">
+        <h1 className="text-2xl font-bold tracking-wide">AIカッシー</h1>
+        <form action={signOut}>
+          <button
+            type="submit"
+            className="min-h-12 rounded border border-line bg-white px-5 text-base hover:bg-neutral-100"
           >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+            ログアウト
+          </button>
+        </form>
+      </header>
+
+      <section className="mt-6 text-base">
+        <p>
+          ログイン中：
+          <span className="font-bold">{profile?.display_name || "（表示名なし）"}</span>
+        </p>
+        <p className="mt-1 text-sm text-neutral-600">{user.email}</p>
+      </section>
+
+      {saved === "ok" && (
+        <p className="mt-6 border-l-4 border-accent bg-white px-4 py-3" role="status">
+          保存しました。
+        </p>
+      )}
+      {saved === "error" && (
+        <p className="mt-6 border-l-4 border-red-700 bg-white px-4 py-3" role="alert">
+          保存できませんでした。もう一度お試しください。
+        </p>
+      )}
+
+      <form action={saveProfile} className="mt-8 flex flex-col gap-6">
+        <label className="flex flex-col gap-2">
+          <span className="font-bold">表示名</span>
+          <input
+            name="display_name"
+            type="text"
+            defaultValue={profile?.display_name ?? ""}
+            maxLength={50}
+            autoComplete="nickname"
+            className="min-h-14 rounded border border-line bg-white px-4"
+          />
+        </label>
+
+        <label className="flex flex-col gap-2">
+          <span className="font-bold">メモ（音声入力の動作確認用）</span>
+          <span className="text-sm text-neutral-600">
+            iPad ではキーボードのマイクボタンを押して話すと、ここに文字が入ります。
+          </span>
+          <textarea
+            name="memo"
+            defaultValue={profile?.memo ?? ""}
+            rows={8}
+            maxLength={2000}
+            className="rounded border border-line bg-white px-4 py-3 leading-relaxed"
+          />
+        </label>
+
+        <button
+          type="submit"
+          className="min-h-14 rounded bg-accent px-6 text-lg font-bold text-white hover:opacity-90"
+        >
+          保存する
+        </button>
+      </form>
+
+      {profile?.updated_at && (
+        <p className="mt-4 text-sm text-neutral-600">
+          最終保存：{new Date(profile.updated_at).toLocaleString("ja-JP")}
+        </p>
+      )}
+    </main>
   );
 }
