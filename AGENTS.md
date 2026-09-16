@@ -17,11 +17,14 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 1. **アプリ本体（`src/`）から service_role キーを使わない。** 使ってよいのは `scripts/` と `tests/` だけ。
 2. **行の持ち主（user_id）は `auth.getUser()` から決める。** フォームやリクエストで渡された user_id は信用しない。
-3. **新しいテーブルは必ず RLS を有効にし、`auth.uid() = <持ち主列>` の select / insert / update / delete ポリシーを付ける。** `supabase/migrations/20260915000001_profiles.sql` がひな形。
-4. **DB の変更は必ず `supabase/migrations/` の SQL ファイルで行う。** ダッシュボードの SQL Editor で直接変えない。
-5. **本人の実データを使わない。** 開発・テストは架空ユーザー（`kasshi-test-a/b@example.com`）だけ。
-6. **既存事業（DAIBUTSU・大仏ノート・KSJ系）の Supabase・Vercel・リポジトリに触れない。** このプロジェクトは完全に独立している。
-7. `.env.local` / `.env.test.local` は commit しない（`.gitignore` 済み）。
+3. **新しいテーブルは必ず RLS を有効にし、`auth.uid() = <持ち主列>` の select / insert / update / delete ポリシーを付ける。** `supabase/migrations/20260917000001_chat.sql` がひな形。
+4. **新しいテーブルには GRANT も必ず書く。** この Supabase では `authenticated` にも `service_role` にも権限が自動で付かない。付け忘れると `42501 permission denied` になる。`anon` には何も与えない。
+5. **DB の変更は必ず `supabase/migrations/` の SQL ファイルで行う。** ダッシュボードの SQL Editor で直接変えない。
+6. **モデル名・単価・上限は `src/config/ai.ts` だけに書く。** 他の場所に書かない。原価の掛け算は `src/lib/ai/cost.ts` の `estimateCostUsd` だけで行う。
+7. **AI の呼び出しは `src/lib/ai/anthropic.ts` に閉じ込める。** 画面やサーバーアクションから SDK を直接触らない。
+8. **本人（柏村さん）の実データを使わない。** 開発・テストは架空ユーザー（`kasshi-test-a/b@example.com`）と川上さんのアドレスだけ。
+9. **既存事業（DAIBUTSU・大仏ノート・KSJ系）の Supabase・Vercel・リポジトリ・APIキーに触れない。** AIカッシー専用の APIキーを使う。
+10. `.env.local` / `.env.test.local` は commit しない（`.gitignore` 済み）。
 
 ## 技術スタック
 
@@ -29,7 +32,16 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - TypeScript / Tailwind CSS v4（設定は `globals.css` の `@theme`）
 - Supabase（Auth：メールの6桁コード・招待制 / Postgres + RLS）
 - Supabase CLI（`npx supabase ...`、devDependency）
+- Anthropic SDK（`@anthropic-ai/sdk`）／モデルは `claude-sonnet-5`
 - vitest（`tests/`）
+
+## ハマりどころ（実際に起きたこと）
+
+- `[auth.email] enable_signup = false` は「メールでのログイン自体」を止める。招待制は `[auth] enable_signup = false` だけで行う。
+- 新しいテーブルは `authenticated` にも `service_role` にも権限が自動で付かない（上記4）。
+- 架空ユーザー（`@example.com`）には Supabase がメールを送らない。画面のログインを試すときは `npm run dev:otp` でコードを取り出す。
+- Docker が入っていないため `supabase start` / `db dump` は使えない。確認は開発用のクラウドで行う。
+- 認証 Cookie は `src/lib/supabase/cookies.ts` で90日に縮めている（ライブラリ既定は400日）。短い Cookie を伸ばさないよう、上限を超えるものだけ縮める作りにしてある。
 
 ## よく使うコマンド
 
@@ -39,10 +51,15 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 | DB 変更を開発用 Supabase へ反映 | `npm run db:push` |
 | Supabase の設定（招待制・メール文面）を反映 | `npm run config:push` |
 | 架空ユーザー A・B を作る | `npm run seed` |
-| 越境アクセスの自動テスト | `npm test` |
+| テスト（越境アクセス・原価計算） | `npm test` |
 | ログインを許可する人を登録 | `npm run invite -- メールアドレス` |
+| 架空ユーザーの6桁コードを取り出す | `npm run dev:otp -- kasshi-test-a@example.com` |
+| 架空ユーザーのテストデータを消す | `npm run reset:test` |
 
 ## Phase の範囲（勝手に次へ進まない）
 
-- Phase 1（現在）：土台のみ。認証・最小画面・RLS・越境テスト。
-- AI会話・長期記憶・記憶候補・音声ファイル処理・PDF・原価計測・管理画面は **Phase 1 では作らない**。
+- Phase 1（完了）：土台。認証・最小画面・RLS・越境テスト。
+- Phase 2（現在）：文字チャット・会話履歴・AI利用量と推定原価・原価の安全装置・Cookie 90日。
+- **Phase 2 では作らない**：長期記憶・記憶候補・記憶検索・ベクトル検索・PDF・アプリ内マイク・
+  リアルタイム音声・管理画面・複数AI Provider・自動モデル切替・柏村さん本人の実データ。
+- Phase 3（未着手）：長期記憶。**指示があるまで着手しない。**

@@ -14,9 +14,11 @@
     "db:push": "supabase db push",
     "db:diff": "supabase db diff",
     "config:push": "supabase config push",
-    "dev:otp": "tsx scripts/dev-otp.ts"
+    "dev:otp": "tsx scripts/dev-otp.ts",
+    "reset:test": "tsx scripts/reset-test-data.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.126.0",
     "@supabase/ssr": "^0.12.7",
     "@supabase/supabase-js": "^2.116.0",
     "next": "16.3.5",

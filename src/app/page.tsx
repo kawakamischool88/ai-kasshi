@@ -1,129 +1,98 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { saveProfile, signOut } from "./actions";
+import { getBudgetStatus } from "@/lib/ai/budget";
+import { hasApiKey } from "@/lib/ai/anthropic";
+import { createConversation } from "./actions";
+import { Header } from "./Header";
 
-/** 保存完了の表示。見落とされないよう、大きく・色付きで出す */
-function SavedBanner() {
-  return (
-    <p
-      className="flex min-h-14 items-center gap-3 rounded bg-accent px-5 text-lg font-bold text-white"
-      role="status"
-      aria-live="polite"
-    >
-      <span aria-hidden="true" className="text-2xl">
-        ✓
-      </span>
-      保存しました
-    </p>
-  );
-}
-
-/**
- * ログイン後の最小画面（Phase 1）。
- * - 誰でログインしているか
- * - 表示名とメモの保存（iPad の音声入力が保存まで通るかの確認用）
- * - ログアウト
- */
-export default async function Home({
-  searchParams,
-}: {
-  searchParams: Promise<{ saved?: string }>;
-}) {
+/** 会話の一覧。ここから新しく話し始めるか、過去の会話を開き直す */
+export default async function Home() {
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  // RLS により、自分の行しか返らない
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("display_name, memo, updated_at")
-    .eq("id", user.id)
-    .maybeSingle();
+  const [{ data: conversations }, budget] = await Promise.all([
+    supabase
+      .from("conversations")
+      .select("id, title, last_message_at")
+      .order("last_message_at", { ascending: false })
+      .limit(100),
+    getBudgetStatus(supabase),
+  ]);
 
-  const { saved } = await searchParams;
+  const list = conversations ?? [];
 
   return (
     <main className="mx-auto w-full max-w-2xl flex-1 px-5 py-8">
-      <header className="flex items-center justify-between border-b border-line pb-4">
-        <h1 className="text-2xl font-bold tracking-wide">AIカッシー</h1>
-        <form action={signOut}>
-          <button
-            type="submit"
-            className="min-h-12 rounded border border-line bg-white px-5 text-base hover:bg-neutral-100"
-          >
-            ログアウト
-          </button>
-        </form>
-      </header>
+      <Header />
 
-      <section className="mt-6 text-base">
-        <p>
-          ログイン中：
-          <span className="font-bold">{profile?.display_name || "（表示名なし）"}</span>
-        </p>
-        <p className="mt-1 text-sm text-neutral-600">{user.email}</p>
-      </section>
-
-      {/* 保存結果は、押した「保存する」ボタンのすぐ下に大きく出す。
-          画面上部に小さく出すだけでは気づかれなかった（iPad 実機確認 2026-09-17） */}
-      {saved === "ok" && <SavedBanner />}
-      {saved === "error" && (
-        <p
-          className="mt-6 border-l-4 border-red-700 bg-white px-4 py-4 text-lg font-bold"
-          role="alert"
-        >
-          保存できませんでした。もう一度お試しください。
+      {!hasApiKey() && (
+        <p className="mt-6 border-l-4 border-red-700 bg-white px-4 py-4" role="alert">
+          AIの設定がまだ済んでいません。管理者にお知らせください。
         </p>
       )}
 
-      <form action={saveProfile} className="mt-8 flex flex-col gap-6">
-        <label className="flex flex-col gap-2">
-          <span className="font-bold">表示名</span>
-          <input
-            name="display_name"
-            type="text"
-            lang="ja"
-            defaultValue={profile?.display_name ?? ""}
-            maxLength={50}
-            autoComplete="nickname"
-            className="min-h-14 rounded border border-line bg-white px-4"
-          />
-        </label>
+      {budget.state === "stopped" && (
+        <p className="mt-6 border-l-4 border-red-700 bg-white px-4 py-4" role="alert">
+          今月のAIの利用上限に達したため、新しい返事は止めています。
+          <br />
+          これまでの会話は、これまで通り読めます。
+        </p>
+      )}
+      {budget.state === "warning" && (
+        <p className="mt-6 border-l-4 border-accent bg-white px-4 py-4" role="status">
+          今月のAIの利用が、目安の金額を超えました。
+        </p>
+      )}
 
-        <label className="flex flex-col gap-2">
-          <span className="font-bold">メモ（音声入力の動作確認用）</span>
-          <span className="text-sm text-neutral-600">
-            iPad ではキーボードのマイクボタンを押して話すと、ここに文字が入ります。
-            <br />
-            英語で聞き取られるときは、マイクボタンを<strong>長押し</strong>して「日本語」を選んでください。
-          </span>
-          <textarea
-            name="memo"
-            lang="ja"
-            defaultValue={profile?.memo ?? ""}
-            rows={8}
-            maxLength={2000}
-            className="rounded border border-line bg-white px-4 py-3 leading-relaxed"
-          />
-        </label>
-
+      <form action={createConversation} className="mt-8">
         <button
           type="submit"
-          className="min-h-14 rounded bg-accent px-6 text-lg font-bold text-white hover:opacity-90"
+          className="min-h-16 w-full rounded bg-accent px-6 text-xl font-bold text-white hover:opacity-90"
         >
-          保存する
+          新しく話す
         </button>
-
-        {saved === "ok" && <SavedBanner />}
       </form>
 
-      {profile?.updated_at && (
-        <p className="mt-4 text-sm text-neutral-600">
-          最終保存：{new Date(profile.updated_at).toLocaleString("ja-JP")}
-        </p>
-      )}
+      <section className="mt-10">
+        <h2 className="text-lg font-bold">これまでの会話</h2>
+
+        {list.length === 0 ? (
+          <p className="mt-4 text-neutral-600">まだ会話はありません。</p>
+        ) : (
+          <ul className="m-0 mt-4 list-none p-0">
+            {list.map((c) => (
+              <li key={c.id} className="border-b border-line first:border-t">
+                <Link
+                  href={`/c/${c.id}`}
+                  className="flex min-h-16 flex-col justify-center gap-1 px-1 py-3 no-underline"
+                >
+                  <span className="text-lg">{c.title || "（まだ話していません）"}</span>
+                  <span className="text-sm text-neutral-600">
+                    {new Date(c.last_message_at).toLocaleString("ja-JP", {
+                      year: "numeric",
+                      month: "long",
+                      day: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {/* 開発確認用。柏村さんが使い始める前に、見えないようにするか管理者だけに限る */}
+      <footer className="mt-16 border-t border-line pt-5 text-sm text-neutral-600">
+        <Link href="/cost" className="underline underline-offset-4">
+          利用状況（開発確認用）
+        </Link>
+      </footer>
     </main>
   );
 }

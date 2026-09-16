@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { cookieOptions } from "./cookies";
 
 /** ログインなしで開けるページ */
 const PUBLIC_PATHS = ["/login"];
@@ -25,11 +26,7 @@ export async function updateSession(request: NextRequest) {
           );
           response = NextResponse.next({ request });
           cookiesToSet.forEach(({ name, value, options }) =>
-            response.cookies.set(name, value, {
-              ...options,
-              sameSite: "lax",
-              secure: process.env.NODE_ENV === "production",
-            }),
+            response.cookies.set(name, value, cookieOptions(options)),
           );
         },
       },

@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
+import { cookieOptions } from "./cookies";
 
 /**
  * サーバー側（Server Component / Server Action）の Supabase クライアント。
@@ -22,11 +23,7 @@ export async function createClient() {
         setAll(cookiesToSet) {
           try {
             cookiesToSet.forEach(({ name, value, options }) =>
-              cookieStore.set(name, value, {
-                ...options,
-                sameSite: "lax",
-                secure: process.env.NODE_ENV === "production",
-              }),
+              cookieStore.set(name, value, cookieOptions(options)),
             );
           } catch {
             // Server Component からは Cookie を書けない場合がある。
