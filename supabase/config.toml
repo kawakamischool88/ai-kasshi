@@ -218,8 +218,10 @@ web3 = 30
 
 [auth.email]
 # Allow/disallow new user signups via email to your project.
-# 招待制：メールからの新規登録も止める
-enable_signup = false
+# 注意：この値を false にすると「メールでのログイン自体」が止まり、
+# 既存ユーザーも "Email logins are disabled" で入れなくなる（2026-09-16 に実際に発生）。
+# 新規登録の停止は上の [auth] enable_signup = false だけで行い、ここは true のままにする。
+enable_signup = true
 # If enabled, a user will be required to confirm any email change on both the old, and new email
 # addresses. If disabled, only the new email is required to confirm.
 double_confirm_changes = true
