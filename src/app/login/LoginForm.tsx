@@ -87,6 +87,18 @@ export function LoginForm() {
         >
           {busy ? "送っています…" : "ログイン用のコードを送る"}
         </button>
+        {/* 既にコードが届いている（画面を閉じてしまった等）ときは、送り直さずに入力へ進める */}
+        <button
+          type="button"
+          disabled={busy || !email.trim()}
+          onClick={() => {
+            setMessage(null);
+            setStep("code");
+          }}
+          className="min-h-12 text-base underline underline-offset-4 disabled:opacity-40"
+        >
+          すでにコードを持っている
+        </button>
         {message && (
           <p role="alert" className="border-l-4 border-red-700 bg-white px-4 py-3 text-base">
             {message}

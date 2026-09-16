@@ -13,7 +13,8 @@
     "invite": "tsx scripts/invite.ts",
     "db:push": "supabase db push",
     "db:diff": "supabase db diff",
-    "config:push": "supabase config push"
+    "config:push": "supabase config push",
+    "dev:otp": "tsx scripts/dev-otp.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.7",
