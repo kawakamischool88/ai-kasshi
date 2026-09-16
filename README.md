@@ -68,12 +68,23 @@ npm run dev
 ```
 http://localhost:3000 を開き、メールアドレス → 届いた6桁コード でログインできることを確認。
 
-## 2. Vercel へ載せる
+## 2. Vercel（設定済み）
 
-1. GitHub に空のリポジトリ `ai-kasshi` を作り、このフォルダを push
-2. Vercel で「Add New → Project」→ `ai-kasshi` を選ぶ
-3. Environment Variables に `.env.local` の2つ（`NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY`）を登録
-4. Deploy
+- 本番 URL：https://ai-kasshi.vercel.app
+- GitHub `kawakamischool88/ai-kasshi` の `main` へ push すると自動でデプロイされる
+- 環境変数は `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` の2つだけ（service_role は登録しない）
+- push は川上さんがターミナルで行う：`git push origin main`
+
+## 2-1. 架空ユーザーで画面のログインを試すとき
+
+架空ユーザー（`@example.com`）にはメールが届かないので、コードをスクリプトで取り出す。
+
+```bash
+npm run dev:otp -- kasshi-test-a@example.com
+```
+
+ログイン画面でメールアドレスを入れ、「すでにコードを持っている」→ 表示された6桁を入力。
+（`@example.com` 以外のアドレスには使えない）
 
 ## 3. 仕組みの要点
 
