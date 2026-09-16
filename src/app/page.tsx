@@ -2,6 +2,22 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { saveProfile, signOut } from "./actions";
 
+/** 保存完了の表示。見落とされないよう、大きく・色付きで出す */
+function SavedBanner() {
+  return (
+    <p
+      className="flex min-h-14 items-center gap-3 rounded bg-accent px-5 text-lg font-bold text-white"
+      role="status"
+      aria-live="polite"
+    >
+      <span aria-hidden="true" className="text-2xl">
+        ✓
+      </span>
+      保存しました
+    </p>
+  );
+}
+
 /**
  * ログイン後の最小画面（Phase 1）。
  * - 誰でログインしているか
@@ -50,13 +66,14 @@ export default async function Home({
         <p className="mt-1 text-sm text-neutral-600">{user.email}</p>
       </section>
 
-      {saved === "ok" && (
-        <p className="mt-6 border-l-4 border-accent bg-white px-4 py-3" role="status">
-          保存しました。
-        </p>
-      )}
+      {/* 保存結果は、押した「保存する」ボタンのすぐ下に大きく出す。
+          画面上部に小さく出すだけでは気づかれなかった（iPad 実機確認 2026-09-17） */}
+      {saved === "ok" && <SavedBanner />}
       {saved === "error" && (
-        <p className="mt-6 border-l-4 border-red-700 bg-white px-4 py-3" role="alert">
+        <p
+          className="mt-6 border-l-4 border-red-700 bg-white px-4 py-4 text-lg font-bold"
+          role="alert"
+        >
           保存できませんでした。もう一度お試しください。
         </p>
       )}
@@ -67,6 +84,7 @@ export default async function Home({
           <input
             name="display_name"
             type="text"
+            lang="ja"
             defaultValue={profile?.display_name ?? ""}
             maxLength={50}
             autoComplete="nickname"
@@ -78,9 +96,12 @@ export default async function Home({
           <span className="font-bold">メモ（音声入力の動作確認用）</span>
           <span className="text-sm text-neutral-600">
             iPad ではキーボードのマイクボタンを押して話すと、ここに文字が入ります。
+            <br />
+            英語で聞き取られるときは、マイクボタンを<strong>長押し</strong>して「日本語」を選んでください。
           </span>
           <textarea
             name="memo"
+            lang="ja"
             defaultValue={profile?.memo ?? ""}
             rows={8}
             maxLength={2000}
@@ -94,6 +115,8 @@ export default async function Home({
         >
           保存する
         </button>
+
+        {saved === "ok" && <SavedBanner />}
       </form>
 
       {profile?.updated_at && (
