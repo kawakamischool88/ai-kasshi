@@ -120,10 +120,11 @@ crossUserSuite("A → B", () => a, () => idA, () => b, () => idB);
 crossUserSuite("B → A", () => b, () => idB, () => a, () => idA);
 
 describe("未ログイン（anon）", () => {
+  // anon にはテーブル権限そのものを与えていないため、
+  // 「権限なしエラー(42501)」か「0件」のどちらかになれば拒否できている。
   it("読取：何も見えない", async () => {
     const { data, error } = await anon.from("profiles").select("id");
-    expect(error).toBeNull();
-    expect(data).toEqual([]);
+    expect(error?.code === RLS_VIOLATION || (error === null && data?.length === 0)).toBe(true);
   });
 
   it("作成：できない", async () => {
@@ -131,11 +132,16 @@ describe("未ログイン（anon）", () => {
     expect(error).not.toBeNull();
   });
 
-  it("更新・削除：0件", async () => {
-    const { data: u } = await anon.from("profiles").update({ display_name: "x" }).eq("id", idA).select("id");
-    expect(u).toEqual([]);
-    const { data: d } = await anon.from("profiles").delete().eq("id", idA).select("id");
-    expect(d).toEqual([]);
+  it("更新・削除：できない", async () => {
+    const { data: u, error: ue } = await anon.from("profiles").update({ display_name: "x" }).eq("id", idA).select("id");
+    expect(ue !== null || u?.length === 0).toBe(true);
+    const { data: d, error: de } = await anon.from("profiles").delete().eq("id", idA).select("id");
+    expect(de !== null || d?.length === 0).toBe(true);
+
+    // A の行は無傷
+    const { data: check } = await a.from("profiles").select("id, display_name").eq("id", idA).single();
+    expect(check?.id).toBe(idA);
+    expect(check?.display_name).not.toBe("x");
   });
 });
 
