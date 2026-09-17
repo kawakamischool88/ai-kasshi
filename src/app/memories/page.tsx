@@ -6,6 +6,7 @@ import { Header } from "@/app/Header";
 import { formatDateTimeJst } from "@/lib/time";
 import { MemoryList, type MemoryItem } from "./MemoryList";
 import { ExportButton } from "./ExportButton";
+import { ReviewPdfButton } from "./ReviewPdfButton";
 
 /**
  * カッシーに残っている内容の一覧（Phase 3C）。
@@ -55,6 +56,9 @@ export default async function MemoriesPage() {
         </p>
         <MemoryList items={past} emptyMessage="昔の考えとして残しているものはありません。" />
       </section>
+
+      {/* その月の振り返りを読む（Phase 4C） */}
+      <ReviewPdfButton />
 
       {/* 自分のデータを手元へ持っていく（Phase 4B） */}
       <ExportButton />

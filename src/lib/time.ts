@@ -42,3 +42,35 @@ export function dateKeyJst(d: Date): string {
   const jst = new Date(d.getTime() + 9 * 60 * 60 * 1000);
   return jst.toISOString().slice(0, 10);
 }
+
+/** 日本時間での「その月の1日 0時」と「翌月1日 0時」（Phase 4C） */
+export function monthRangeJst(
+  offsetMonths: number,
+  now: Date = new Date(),
+): { start: Date; end: Date; label: string } {
+  const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
+  const jst = new Date(now.getTime() + JST_OFFSET_MS);
+  const year = jst.getUTCFullYear();
+  const month = jst.getUTCMonth() + offsetMonths;
+
+  const start = new Date(Date.UTC(year, month, 1) - JST_OFFSET_MS);
+  const end = new Date(Date.UTC(year, month + 1, 1) - JST_OFFSET_MS);
+
+  // 見出し用の「2026年9月」。月がまたがっても正しく出るよう、開始日から作る
+  const label = new Date(start).toLocaleDateString("ja-JP", {
+    timeZone: JST,
+    year: "numeric",
+    month: "long",
+  });
+  return { start, end, label };
+}
+
+/** 画面・PDF表示用：日本時間の「2026年9月5日」 */
+export function formatDayJst(value: Date | string): string {
+  return new Date(value).toLocaleDateString("ja-JP", {
+    timeZone: JST,
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+}
