@@ -42,6 +42,17 @@ export async function updateSession(request: NextRequest) {
   const isPublic = PUBLIC_PATHS.some((p) => pathname.startsWith(p));
 
   if (!user && !isPublic) {
+    /* 画面ではないやりとり（/api/…）は、ログイン画面へ送らない。
+       ログイン画面のHTMLが「ファイル」として返ってしまい、
+       受け取る側が中身を取り違えるおそれがあるため。
+       それぞれの受け口が「ログインが必要です」と短く返す。 */
+    if (pathname.startsWith("/api/")) {
+      return NextResponse.json(
+        { message: "ログインが必要です。" },
+        { status: 401, headers: { "cache-control": "no-store" } },
+      );
+    }
+
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     return NextResponse.redirect(url);

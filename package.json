@@ -20,12 +20,14 @@
     "ledger": "tsx scripts/ledger.ts",
     "restore": "tsx scripts/restore.ts",
     "restore:ledger": "tsx scripts/restore-ledger.ts",
-    "restore:verify": "tsx scripts/restore-verify.ts"
+    "restore:verify": "tsx scripts/restore-verify.ts",
+    "export:check": "tsx scripts/import-export.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.126.0",
     "@supabase/ssr": "^0.12.7",
     "@supabase/supabase-js": "^2.116.0",
+    "jszip": "^3.10.2",
     "next": "16.3.5",
     "react": "19.2.8",
     "react-dom": "19.2.8"

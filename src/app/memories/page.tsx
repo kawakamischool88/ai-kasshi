@@ -5,6 +5,7 @@ import { createClient } from "@/lib/supabase/server";
 import { Header } from "@/app/Header";
 import { formatDateTimeJst } from "@/lib/time";
 import { MemoryList, type MemoryItem } from "./MemoryList";
+import { ExportButton } from "./ExportButton";
 
 /**
  * カッシーに残っている内容の一覧（Phase 3C）。
@@ -54,6 +55,9 @@ export default async function MemoriesPage() {
         </p>
         <MemoryList items={past} emptyMessage="昔の考えとして残しているものはありません。" />
       </section>
+
+      {/* 自分のデータを手元へ持っていく（Phase 4B） */}
+      <ExportButton />
 
       <p className="mt-12 text-base text-neutral-600">
         まだ残すかどうか決めていないものは、
