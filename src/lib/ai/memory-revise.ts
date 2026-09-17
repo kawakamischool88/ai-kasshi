@@ -8,7 +8,7 @@ import {
 } from "@/config/revision-prompt";
 import { EMPTY_USAGE, type UsageCounts } from "./cost";
 import type { ChatErrorCode } from "./anthropic";
-import { lexicalScore, type Memory } from "./memory-search";
+import { fetchCandidateMemories, lexicalScore, type Memory } from "./memory-search";
 
 /**
  * 記憶の訂正・考えの変化・削除の「対象探し」（Phase 3C）。
@@ -82,6 +82,32 @@ function getClient(): Anthropic | null {
   return new Anthropic({ apiKey, maxRetries: 1, timeout: 60_000 });
 }
 
+/** 昔の考えも操作の対象にする（消したい・直したいと言われることがあるため） */
+async function fetchPastForRevision(
+  supabase: SupabaseClient,
+  userId: string,
+): Promise<Memory[]> {
+  const { data, error } = await supabase
+    .from("past_memories")
+    .select("id, text, conversation_id, confirmed_at, version")
+    .eq("user_id", userId)
+    .order("revised_at", { ascending: false })
+    .limit(SEARCH.pastFetchLimit);
+
+  if (error) {
+    console.error("[記憶の操作] 過去の考えの読み込みに失敗:", error);
+    return [];
+  }
+  return (data ?? []).map((r) => ({
+    id: r.id as string,
+    text: r.text as string,
+    conversationId: r.conversation_id as string,
+    confirmedAt: (r.confirmed_at as string) ?? null,
+    isPast: true,
+    version: (r.version as number) ?? 1,
+  }));
+}
+
 /**
  * 本人の記憶（現在の内容と過去の考え）を取り出し、AIに見せる分だけに絞る。
  *
@@ -94,43 +120,14 @@ async function fetchRevisionCandidates(
   userId: string,
   utterance: string,
 ): Promise<Memory[]> {
+  /* 検索と同じ取り出し方（Phase 3D で件数の打ち切りをやめた）。
+     消したい記憶が古くて見つからない、ということが起きないようにする。 */
   const [current, past] = await Promise.all([
-    supabase
-      .from("confirmed_memories")
-      .select("id, text, conversation_id, confirmed_at")
-      .eq("user_id", userId) // RLS に加えて明示（他人のぶんは最初から対象にしない）
-      .order("confirmed_at", { ascending: false })
-      .limit(SEARCH.fetchLimit),
-    supabase
-      .from("past_memories")
-      .select("id, text, conversation_id, confirmed_at")
-      .eq("user_id", userId)
-      .order("revised_at", { ascending: false })
-      .limit(SEARCH.pastFetchLimit),
+    fetchCandidateMemories(supabase, userId, utterance, false),
+    fetchPastForRevision(supabase, userId),
   ]);
 
-  if (current.error) {
-    console.error("[記憶の操作] 記憶の読み込みに失敗:", current.error);
-    return [];
-  }
-  if (past.error) console.error("[記憶の操作] 過去の考えの読み込みに失敗:", past.error);
-
-  const all: Memory[] = [
-    ...(current.data ?? []).map((r) => ({
-      id: r.id as string,
-      text: r.text as string,
-      conversationId: r.conversation_id as string,
-      confirmedAt: (r.confirmed_at as string) ?? null,
-      isPast: false,
-    })),
-    ...(past.data ?? []).map((r) => ({
-      id: r.id as string,
-      text: r.text as string,
-      conversationId: r.conversation_id as string,
-      confirmedAt: (r.confirmed_at as string) ?? null,
-      isPast: true,
-    })),
-  ];
+  const all: Memory[] = [...current, ...past];
 
   // 文字の重なりが強い順 → 元の並び順
   const scored = all

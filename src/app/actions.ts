@@ -16,6 +16,8 @@ import {
   searchMemories,
   fetchUsedMemoriesInConversation,
   keepStillUsable,
+  memoriesUnchanged,
+  snapshotOf,
   type Memory,
 } from "@/lib/ai/memory-search";
 
@@ -123,35 +125,81 @@ async function recordUsage(supabase: SupabaseClient, row: UsageRow) {
 // 返事をもらう（送信と再試行で共通）
 // =============================================================
 
+/**
+ * 有料のAI処理を始める前に、毎回ここで止める（Phase 3D）。
+ *
+ * 【なぜ呼び出しごとに確かめるか】
+ * 1往復のあいだに有料の呼び出しが最大4回ある
+ * （記憶の検索・会話の返事・記憶候補の取り出し・訂正や削除の対象探し）。
+ * 最初に1回だけ確かめる作りだと、その1往復の途中で停止値を超えても
+ * 残りの呼び出しが走ってしまう。
+ *
+ * 止めたときも記録を1行残す（あとで「何回止めたか」が分かるように）。
+ */
+async function blockedByBudget(
+  supabase: SupabaseClient,
+  userId: string,
+  conversationId: string,
+  operationType: UsageRow["operationType"],
+  model: string,
+  messageId: string | null = null,
+): Promise<boolean> {
+  const budget = await getBudgetStatus(supabase);
+  if (budget.state !== "stopped") return false;
+
+  await recordUsage(supabase, {
+    userId,
+    conversationId,
+    messageId,
+    operationType,
+    model,
+    usage: EMPTY_USAGE,
+    thinkingTokens: 0,
+    serviceTier: null,
+    status: "blocked",
+    errorCode: "budget_stopped",
+    durationMs: 0,
+  });
+  return true;
+}
+
 async function runTurn(
   supabase: SupabaseClient,
   userId: string,
   conversationId: string,
 ): Promise<SendResult> {
   // --- 原価の安全装置。停止値に達していたらAIを呼ばない ---
-  const budget = await getBudgetStatus(supabase);
-  if (budget.state === "stopped") {
-    await recordUsage(supabase, {
-      userId,
-      conversationId,
-      messageId: null,
-      operationType: "chat",
-      model: AI.model,
-      usage: EMPTY_USAGE,
-      thinkingTokens: 0,
-      serviceTier: null,
-      status: "blocked",
-      errorCode: "budget_stopped",
-      durationMs: 0,
-    });
+  if (await blockedByBudget(supabase, userId, conversationId, "chat", AI.model)) {
     return { ok: false, message: friendlyMessage("budget_stopped"), canRetry: false };
   }
 
-  // --- AIへ渡す文脈は「この会話の直近のやりとり」だけ ---
+  /* --- いま返事を待っている発言 ---
+     ここだけは、あとで「AIへ送らない」印が付いていても必ず送る
+     （その発言に答えないと会話が止まってしまうため）。 */
+  const { data: latest } = await supabase
+    .from("messages")
+    .select("id, role, content")
+    .eq("conversation_id", conversationId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (!latest || latest.role !== "user") {
+    // 返事をもらう相手の発言がない（再試行の押し間違いなど）
+    return { ok: true };
+  }
+
+  /* --- AIへ渡す文脈は「この会話の直近のやりとり」だけ ---
+
+     【Phase 3D】訂正・削除の影響を受けたやりとりは送らない。
+     記憶を消しても、会話に残った古い内容が
+     **文脈という別の道から**AIに届いてしまうため。
+     画面には今まで通り表示される（本人は読み返せる）。 */
   const { data: recent, error: historyError } = await supabase
     .from("messages")
-    .select("role, content")
+    .select("id, role, content")
     .eq("conversation_id", conversationId)
+    .is("excluded_from_ai_at", null)
     .order("created_at", { ascending: false })
     .limit(AI.contextMessageCount);
 
@@ -165,9 +213,9 @@ async function runTurn(
     .reverse()
     .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
 
-  if (history.length === 0 || history[history.length - 1].role !== "user") {
-    // 返事をもらう相手の発言がない（再試行の押し間違いなど）
-    return { ok: true };
+  // いまの発言が印のせいで抜けていたら、最後に足す
+  if ((recent ?? []).every((m) => m.id !== latest.id)) {
+    history.push({ role: "user", content: latest.content as string });
   }
 
   /* --- 確定記憶の検索（Phase 3B） ---
@@ -177,7 +225,9 @@ async function runTurn(
   /* 「昔はどう考えていた？」と聞かれたときだけ、過去の考えも検索に加える（Phase 3C）。
      ふだんは現在有効な内容だけを見る（昔と今を混ぜないため）。 */
   const wantsPast = asksAboutPast(lastUserText);
-  const search = await searchMemories(supabase, userId, lastUserText, wantsPast);
+  const search = (await blockedByBudget(supabase, userId, conversationId, "memory_search", SEARCH.model))
+    ? { selected: [] as Memory[], examined: 0, call: null }
+    : await searchMemories(supabase, userId, lastUserText, wantsPast);
 
   if (search.call) {
     const c = search.call;
@@ -215,6 +265,16 @@ async function runTurn(
      古い検索結果をそのまま渡すと、消したはずの内容が回答に出てしまう。 */
   const injected = await keepStillUsable(supabase, userId, merged);
 
+  // 記憶の検索でちょうど停止値を越えることがあるので、ここでもう一度確かめる
+  if (await blockedByBudget(supabase, userId, conversationId, "chat", AI.model)) {
+    return { ok: false, message: friendlyMessage("budget_stopped"), canRetry: false };
+  }
+
+  /* 返事を作り始めた時点の記憶の控え。
+     返事ができたあと、これと突き合わせて「途中で変わっていないか」を確かめる。 */
+  const snapshot = snapshotOf(injected);
+  const isPastById = new Map(injected.map((m) => [m.id, m.isPast]));
+
   // --- 呼び出し ---
   const result = await chat(
     history,
@@ -238,6 +298,37 @@ async function runTurn(
     console.error("[runTurn] AI呼び出し失敗:", result.errorCode, result.detail);
     const canRetry = result.errorCode !== "no_api_key" && result.errorCode !== "auth";
     return { ok: false, message: friendlyMessage(result.errorCode), canRetry };
+  }
+
+  /* --- 返事を保存する直前の確かめ（Phase 3D） ---
+
+     AIが返事を作っている数秒のあいだに、本人が別の画面で
+     その記憶を消したり直したりしていることがある。
+     そのまま保存すると、**消したはずの内容にもとづく返事が残ってしまう**。
+     1件でも変わっていたら、この返事は使わない。 */
+  if (!(await memoriesUnchanged(supabase, userId, snapshot, isPastById))) {
+    /* 呼び出しの費用はかかっているので、記録は残す。
+       返事は保存しないため、error_code でその理由を残す。 */
+    await recordUsage(supabase, {
+      userId,
+      conversationId,
+      messageId: null,
+      operationType: "chat",
+      model: result.model,
+      usage: result.usage,
+      thinkingTokens: result.thinkingTokens,
+      serviceTier: result.serviceTier,
+      status: "success",
+      errorCode: "memory_changed_discarded",
+      durationMs: result.durationMs,
+    });
+    console.warn("[runTurn] 返事の作成中に記憶が変わったため、この返事は使いません");
+    return {
+      ok: false,
+      message:
+        "参考にしていた内容が途中で変更されたため、この返事は使いませんでした。もう一度お試しください。",
+      canRetry: true,
+    };
   }
 
   // --- 返事を保存 ---
@@ -286,6 +377,7 @@ async function runTurn(
   const sourceMessageId = await findLastUserMessageId(supabase, conversationId);
   if (sourceMessageId) {
     await extractAndSaveCandidates(supabase, userId, conversationId, sourceMessageId, history);
+
 
     /* --- 訂正・考えの変化・削除の対象探し（Phase 3C） ---
        「それ違うよ」「○○の記憶を消して」等と言われたときだけ走る。
@@ -400,6 +492,11 @@ async function extractAndSaveCandidates(
       .limit(1);
     if (deleted && deleted.length > 0) {
       console.warn("[記憶候補] この発言から作った記憶は削除済みのため、作り直さない");
+      return;
+    }
+
+    // 有料の呼び出しの前に、毎回止める（Phase 3D）
+    if (await blockedByBudget(supabase, userId, conversationId, "memory_extract", MEMORY.model, sourceMessageId)) {
       return;
     }
 
@@ -703,6 +800,11 @@ async function findAndSaveRevisionRequests(
       .eq("source_message_id", sourceMessageId)
       .limit(1);
     if (already && already.length > 0) return;
+
+    // 有料の呼び出しの前に、毎回止める（Phase 3D）
+    if (await blockedByBudget(supabase, userId, conversationId, "memory_revise", REVISE.model, sourceMessageId)) {
+      return;
+    }
 
     const outcome = await findRevisionTargets(supabase, userId, utterance);
 

@@ -19,6 +19,8 @@ export type SourceMemory = {
   /** 本人が確定した日時（日本時間の文字列）。削除されたものは空 */
   confirmedAt: string;
   state: SourceState;
+  /** 消された日時（日本時間の文字列）。消されていなければ空 */
+  deletedAt: string;
   /** 訂正・考えの変化のあとの、いまの内容。なければ空 */
   currentText: string;
   /** 元になった会話 */
@@ -69,10 +71,16 @@ export function MemorySource({ memories }: { memories: SourceMemory[] }) {
             <li key={m.id} className="border-b border-line px-4 py-4 last:border-b-0">
               {m.state === "deleted" ? (
                 /* 削除された記憶の本文は出さない。
-                   「参考にしたものが、そのあと消された」ことだけ伝える */
-                <p className="m-0 text-base text-neutral-700">
-                  この返事で参考にした内容は、そのあと消されました。
-                </p>
+                   残すのは「参考にしたものがあった」「そのあと消された」
+                   「いつ消したか」だけ。引用も、中身が分かる題名も残さない。 */
+                <>
+                  <p className="m-0 text-base text-neutral-700">
+                    この返事で参考にした内容は、そのあと削除されました。
+                  </p>
+                  {m.deletedAt && (
+                    <p className="m-0 mt-2 text-sm text-neutral-600">削除した日：{m.deletedAt}</p>
+                  )}
+                </>
               ) : (
                 <>
                   <p className="m-0 text-base">「{m.text}」</p>
@@ -107,18 +115,22 @@ export function MemorySource({ memories }: { memories: SourceMemory[] }) {
                 </>
               )}
 
-              <p className="m-0 mt-1 text-sm text-neutral-600">
-                元の会話：
-                {m.isSameConversation ? (
-                  <span>この会話</span>
-                ) : m.conversationId ? (
-                  <Link href={`/c/${m.conversationId}`} className="underline underline-offset-4">
-                    {m.conversationTitle || "（見出しなし）"}
-                  </Link>
-                ) : (
-                  <span>（消されています）</span>
-                )}
-              </p>
+              {m.conversationId ? (
+                <p className="m-0 mt-1 text-sm text-neutral-600">
+                  元の会話：
+                  {m.isSameConversation ? (
+                    <span>この会話</span>
+                  ) : (
+                    <Link href={`/c/${m.conversationId}`} className="underline underline-offset-4">
+                      {m.conversationTitle || "（見出しなし）"}
+                    </Link>
+                  )}
+                </p>
+              ) : (
+                <p className="m-0 mt-1 text-sm text-neutral-600">
+                  元の会話も、いっしょに消されています。
+                </p>
+              )}
             </li>
           ))}
         </ul>

@@ -14,6 +14,7 @@ const memory = (id: string, text: string, isPast = false): Memory => ({
   conversationId: "c1",
   confirmedAt: null,
   isPast,
+  version: 1,
 });
 
 describe("記憶の操作を求めている言い方かを見る", () => {

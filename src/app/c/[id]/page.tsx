@@ -14,7 +14,7 @@ import { formatDateTimeJst } from "@/lib/time";
 
 /** 出典や提案を表示するために読む列 */
 const MEMORY_COLUMNS =
-  "id, suggested_text, confirmed_text, status, superseded_by, conversation_id, confirmed_at";
+  "id, suggested_text, confirmed_text, status, superseded_by, conversation_id, confirmed_at, deleted_at";
 
 /** 1つの会話の画面。開き直したときは、これまでのやりとりがそのまま出る */
 export default async function ConversationPage({
@@ -130,6 +130,7 @@ type MemoryRow = {
   supersededBy: string | null;
   conversationId: string;
   confirmedAt: string | null;
+  deletedAt: string | null;
 };
 
 function toMemoryRow(r: Record<string, unknown>): MemoryRow {
@@ -140,6 +141,7 @@ function toMemoryRow(r: Record<string, unknown>): MemoryRow {
     supersededBy: ((r.superseded_by as string) ?? null) as string | null,
     conversationId: r.conversation_id as string,
     confirmedAt: ((r.confirmed_at as string) ?? null) as string | null,
+    deletedAt: ((r.deleted_at as string) ?? null) as string | null,
   };
 }
 
@@ -165,18 +167,25 @@ async function loadSources(
 
   const { data: refs } = await supabase
     .from("memory_references")
-    .select("message_id, memory_id")
+    .select("message_id, memory_id, memory_deleted_at")
     .in("message_id", assistantIds);
 
-  const memoryIds = [...new Set((refs ?? []).map((r) => r.memory_id as string))];
-  if (memoryIds.length === 0) return sources;
+  if (!refs || refs.length === 0) return sources;
+
+  const memoryIds = [
+    ...new Set(
+      refs.map((r) => r.memory_id as string | null).filter((v): v is string => Boolean(v)),
+    ),
+  ];
 
   const rows = new Map<string, MemoryRow>();
-  const { data: first } = await supabase
-    .from("memory_candidates")
-    .select(MEMORY_COLUMNS)
-    .in("id", memoryIds);
-  for (const r of first ?? []) rows.set(r.id as string, toMemoryRow(r));
+  if (memoryIds.length > 0) {
+    const { data: first } = await supabase
+      .from("memory_candidates")
+      .select(MEMORY_COLUMNS)
+      .in("id", memoryIds);
+    for (const r of first ?? []) rows.set(r.id as string, toMemoryRow(r));
+  }
 
   /* 訂正・考えの変化のあとの「いまの内容」をたどる。
      何度も直されていることがあるので、数回だけ先へたどる。 */
@@ -209,9 +218,32 @@ async function loadSources(
     return "";
   };
 
-  for (const r of refs ?? []) {
-    const row = rows.get(r.memory_id as string);
-    if (!row) continue;
+  for (const r of refs) {
+    const key = r.message_id as string;
+    const memoryId = r.memory_id as string | null;
+    const row = memoryId ? rows.get(memoryId) : undefined;
+
+    /* 【墓標】記憶そのものが消えている（会話ごと削除など）。
+       出典の行だけが残っている状態。本文は出さない。 */
+    if (!row) {
+      const at = r.memory_deleted_at as string | null;
+      sources[key] = [
+        ...(sources[key] ?? []),
+        {
+          id: `${key}-gone-${sources[key]?.length ?? 0}`,
+          text: "",
+          confirmedAt: "",
+          state: "deleted",
+          deletedAt: at ? formatDateTimeJst(at) : "",
+          currentText: "",
+          conversationId: "",
+          conversationTitle: "",
+          isSameConversation: false,
+        },
+      ];
+      continue;
+    }
+
     const state = toSourceState(row.status);
     if (!state) continue;
 
@@ -221,13 +253,13 @@ async function loadSources(
       confirmedAt:
         state === "deleted" || !row.confirmedAt ? "" : formatDateTimeJst(row.confirmedAt),
       state,
+      deletedAt: row.deletedAt ? formatDateTimeJst(row.deletedAt) : "",
       currentText: state === "corrected" || state === "past" ? currentTextOf(row) : "",
       conversationId: row.conversationId,
       conversationTitle: titleOf.get(row.conversationId) ?? "",
       isSameConversation: row.conversationId === conversationId,
     };
 
-    const key = r.message_id as string;
     sources[key] = [...(sources[key] ?? []), memory];
   }
 

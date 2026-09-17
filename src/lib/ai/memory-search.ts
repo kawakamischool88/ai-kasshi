@@ -27,7 +27,20 @@ export type Memory = {
    * ふだんの検索では出てこない。昔を聞かれたときだけ混ざる。
    */
   isPast: boolean;
+  /**
+   * 何代目の内容か（Phase 3D）。
+   * 返事を作っている途中で訂正されていないかを、この数で確かめる。
+   */
+  version: number;
 };
+
+/** 返事を作り始めた時点の記憶の控え（Phase 3D） */
+export type MemorySnapshot = { id: string; version: number }[];
+
+/** 渡した記憶の控えを取る。保存の直前に、変わっていないかを確かめるため */
+export function snapshotOf(memories: Memory[]): MemorySnapshot {
+  return memories.map((m) => ({ id: m.id, version: m.version }));
+}
 
 export type SearchOutcome = {
   /** 回答へ渡す記憶（最大 SEARCH.maxInject 件）。関係がなければ空 */
@@ -83,12 +96,58 @@ export function lexicalScore(question: string, memory: string): number {
 }
 
 /**
+ * 本人の記憶を、最後まで読み切る（Phase 3D）。
+ *
+ * 【なぜ読み切るのか】
+ * 以前は200件で打ち切っていた。記憶が増えると、
+ * **201件目から先が黙って検索対象から外れていた**。
+ * 本人には何も知らされないまま「昔の記憶だけ思い出せない」状態になる。
+ *
+ * DBからは何回かに分けて読むが、対象は本人の記憶すべて。
+ * 絞り込みはそのあと（文字の重なり → AIの判断）で行う。
+ */
+async function fetchAllRows(
+  supabase: SupabaseClient,
+  userId: string,
+  view: "confirmed_memories" | "past_memories",
+  orderBy: "confirmed_at" | "revised_at",
+): Promise<{ rows: Record<string, unknown>[]; truncated: boolean }> {
+  const rows: Record<string, unknown>[] = [];
+  let from = 0;
+
+  for (;;) {
+    const { data, error } = await supabase
+      .from(view)
+      .select("id, text, conversation_id, confirmed_at, version")
+      .eq("user_id", userId) // RLS に加えて明示（他人のぶんは最初から対象にしない）
+      .order(orderBy, { ascending: false })
+      .order("id", { ascending: false }) // 並びを一意にして、読み落とし・重複を防ぐ
+      .range(from, from + SEARCH.pageSize - 1);
+
+    if (error) {
+      console.error(`[記憶検索] ${view} の読み込みに失敗:`, error);
+      return { rows, truncated: true };
+    }
+
+    const page = data ?? [];
+    rows.push(...page);
+    if (page.length < SEARCH.pageSize) return { rows, truncated: false };
+
+    from += SEARCH.pageSize;
+    if (rows.length >= SEARCH.maxFetch) {
+      console.warn(`[記憶検索] ${view} が ${SEARCH.maxFetch} 件に達したため打ち切りました`);
+      return { rows, truncated: true };
+    }
+  }
+}
+
+/**
  * 本人の確定記憶を取り出し、AIに見せる分だけに絞る。
  *
  * 件数が上限を超えるときは、
  *   ① 質問と文字が重なるもの（固有名詞など）を優先
  *   ② 残りは新しい順
- * で選ぶ。
+ * で選ぶ。**取り出す段階では件数で打ち切らない**（Phase 3D）。
  */
 export async function fetchCandidateMemories(
   supabase: SupabaseClient,
@@ -100,45 +159,30 @@ export async function fetchCandidateMemories(
    */
   includePast = false,
 ): Promise<Memory[]> {
-  const { data, error } = await supabase
-    .from("confirmed_memories")
-    .select("id, text, conversation_id, confirmed_at")
-    .eq("user_id", userId) // RLS に加えて明示（他人のぶんは最初から対象にしない）
-    .order("confirmed_at", { ascending: false })
-    .limit(SEARCH.fetchLimit);
+  const current = await fetchAllRows(supabase, userId, "confirmed_memories", "confirmed_at");
 
-  if (error) {
-    console.error("[記憶検索] 確定記憶の読み込みに失敗:", error);
-    return [];
-  }
-
-  const all: Memory[] = (data ?? []).map((r) => ({
+  const all: Memory[] = current.rows.map((r) => ({
     id: r.id as string,
     text: r.text as string,
     conversationId: r.conversation_id as string,
     confirmedAt: (r.confirmed_at as string) ?? null,
     isPast: false,
+    version: (r.version as number) ?? 1,
   }));
 
   /* 昔を聞かれたときだけ、過去の考えも足す（Phase 3C）。
      訂正された旧版（superseded）は past_memories に入っていないので、
      「間違いだった内容」が昔の考えとして持ち出されることはない。 */
   if (includePast) {
-    const { data: past, error: pastError } = await supabase
-      .from("past_memories")
-      .select("id, text, conversation_id, confirmed_at")
-      .eq("user_id", userId)
-      .order("revised_at", { ascending: false })
-      .limit(SEARCH.pastFetchLimit);
-
-    if (pastError) console.error("[記憶検索] 過去の考えの読み込みに失敗:", pastError);
-    for (const r of past ?? []) {
+    const past = await fetchAllRows(supabase, userId, "past_memories", "revised_at");
+    for (const r of past.rows) {
       all.push({
         id: r.id as string,
         text: r.text as string,
         conversationId: r.conversation_id as string,
         confirmedAt: (r.confirmed_at as string) ?? null,
         isPast: true,
+        version: (r.version as number) ?? 1,
       });
     }
   }
@@ -189,13 +233,16 @@ export async function fetchUsedMemoriesInConversation(
     .select("memory_id")
     .in("message_id", ids);
 
-  const memoryIds = [...new Set((refs ?? []).map((r) => r.memory_id as string))];
+  // 消えた記憶の墓標（memory_id が空の行）は対象にしない
+  const memoryIds = [
+    ...new Set((refs ?? []).map((r) => r.memory_id as string | null).filter((v): v is string => Boolean(v))),
+  ];
   if (memoryIds.length === 0) return [];
 
   // 確定済みだけを見せる view から引く（あとで確定でなくなったものは出てこない）
   const { data } = await supabase
     .from("confirmed_memories")
-    .select("id, text, conversation_id, confirmed_at")
+    .select("id, text, conversation_id, confirmed_at, version")
     .eq("user_id", userId)
     .in("id", memoryIds);
 
@@ -205,6 +252,7 @@ export async function fetchUsedMemoriesInConversation(
     conversationId: r.conversation_id as string,
     confirmedAt: (r.confirmed_at as string) ?? null,
     isPast: false,
+    version: (r.version as number) ?? 1,
   }));
 }
 
@@ -225,38 +273,72 @@ export async function keepStillUsable(
 ): Promise<Memory[]> {
   if (memories.length === 0) return [];
 
+  const alive = await liveVersions(supabase, userId, memories);
+  if (alive === null) return []; // 確かめられなかったときは安全側に倒し、記憶を渡さない
+
+  // 版まで一致するものだけを渡す（途中で直された記憶は渡さない）
+  return memories.filter((m) => alive.get(m.id) === m.version);
+}
+
+/** いま生きている記憶の id と版を引く。失敗したら null */
+async function liveVersions(
+  supabase: SupabaseClient,
+  userId: string,
+  memories: { id: string; isPast: boolean }[],
+): Promise<Map<string, number> | null> {
+  const alive = new Map<string, number>();
+
   const currentIds = memories.filter((m) => !m.isPast).map((m) => m.id);
   const pastIds = memories.filter((m) => m.isPast).map((m) => m.id);
-  const alive = new Set<string>();
 
-  if (currentIds.length > 0) {
+  for (const [view, ids] of [
+    ["confirmed_memories", currentIds],
+    ["past_memories", pastIds],
+  ] as const) {
+    if (ids.length === 0) continue;
     const { data, error } = await supabase
-      .from("confirmed_memories")
-      .select("id")
+      .from(view)
+      .select("id, version")
       .eq("user_id", userId)
-      .in("id", currentIds);
-    // 確かめられなかったときは安全側に倒し、記憶を渡さない
+      .in("id", ids);
     if (error) {
-      console.error("[記憶検索] 渡す直前の確認に失敗（記憶なしで続行）:", error);
-      return [];
+      console.error("[記憶検索] いまの状態を確かめられませんでした:", error);
+      return null;
     }
-    for (const r of data ?? []) alive.add(r.id as string);
+    for (const r of data ?? []) alive.set(r.id as string, (r.version as number) ?? 1);
   }
 
-  if (pastIds.length > 0) {
-    const { data, error } = await supabase
-      .from("past_memories")
-      .select("id")
-      .eq("user_id", userId)
-      .in("id", pastIds);
-    if (error) {
-      console.error("[記憶検索] 渡す直前の確認に失敗（記憶なしで続行）:", error);
-      return [];
-    }
-    for (const r of data ?? []) alive.add(r.id as string);
-  }
+  return alive;
+}
 
-  return memories.filter((m) => alive.has(m.id));
+/**
+ * 返事を保存する直前に、渡した記憶がいまも同じままかを確かめる（Phase 3D）。
+ *
+ * 【なぜ必要か】
+ * AIが返事を作っている数秒の間に、本人が別の画面でその記憶を
+ * 消したり直したりすることがある。
+ * そのまま保存すると、**消したはずの内容にもとづく返事が残ってしまう**。
+ *
+ * 1件でも消えていた・直されていたら false。
+ * そのときは返事を保存せず、本人にやり直しをお願いする。
+ */
+export async function memoriesUnchanged(
+  supabase: SupabaseClient,
+  userId: string,
+  snapshot: MemorySnapshot,
+  isPastById: Map<string, boolean>,
+): Promise<boolean> {
+  if (snapshot.length === 0) return true;
+
+  const alive = await liveVersions(
+    supabase,
+    userId,
+    snapshot.map((s) => ({ id: s.id, isPast: isPastById.get(s.id) ?? false })),
+  );
+  // 確かめられなかったときは安全側に倒す（そのまま保存しない）
+  if (alive === null) return false;
+
+  return snapshot.every((s) => alive.get(s.id) === s.version);
 }
 
 /**
