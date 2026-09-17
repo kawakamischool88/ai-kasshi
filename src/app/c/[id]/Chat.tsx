@@ -35,6 +35,16 @@ export function Chat({
   const boxRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  /**
+   * 送信中かどうかを、画面の作り直しを待たずに覚えておく印。
+   *
+   * isPending だけに頼ると、ボタンを続けて2回押されたとき
+   * 2回目がまだ「送信中ではない」と判断してしまい、別々の送信として
+   * 2通が保存されてしまう（送信IDが別々になるため、保存側の重複防止も効かない）。
+   * ここで即座に鍵をかけて、その取りこぼしをなくす。
+   */
+  const sendingRef = useRef(false);
+
   // 新しいやりとりが増えたら一番下へ
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -45,7 +55,8 @@ export function Chat({
 
   function send() {
     const text = draft.trim();
-    if (!text || isPending) return;
+    if (!text || isPending || sendingRef.current) return;
+    sendingRef.current = true;
     setError(null);
     setPendingText(text);
     const clientRequestId = crypto.randomUUID();
@@ -58,16 +69,19 @@ export function Chat({
         setError({ message: result.message, canRetry: result.canRetry });
       }
       setPendingText(null);
+      sendingRef.current = false;
       boxRef.current?.focus();
     });
   }
 
   function retry() {
-    if (isPending) return;
+    if (isPending || sendingRef.current) return;
+    sendingRef.current = true;
     setError(null);
     startTransition(async () => {
       const result = await retryLastReply(conversationId);
       if (!result.ok) setError({ message: result.message, canRetry: result.canRetry });
+      sendingRef.current = false;
     });
   }
 
