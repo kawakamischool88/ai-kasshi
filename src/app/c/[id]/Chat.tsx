@@ -102,14 +102,7 @@ export function Chat({
 
           {isPending && pendingText && <Bubble role="user" content={pendingText} />}
 
-          {isPending && (
-            <li className="max-w-[90%] self-start">
-              <p className="m-0 mb-1 text-sm font-bold text-neutral-600">AIカッシー</p>
-              <p className="m-0 rounded border border-line bg-white px-5 py-4 text-neutral-600">
-                考えています…
-              </p>
-            </li>
-          )}
+          {isPending && <Bubble role="assistant" content="考えています…" muted />}
         </ul>
         <div ref={bottomRef} />
       </div>
@@ -191,19 +184,43 @@ export function Chat({
   );
 }
 
-function Bubble({ role, content }: { role: "user" | "assistant"; content: string }) {
+/**
+ * 発言の吹き出し。
+ *
+ * どちらの発言かを、色だけに頼らず3つの手がかりで示す。
+ *   1. 位置 … 本人は右寄せ、AIカッシーは左寄せ
+ *   2. 形   … 話し手の側の角だけを小さくして、吹き出しの向きを作る
+ *   3. 塗り … 本人は塗りつぶし、AIカッシーは白地に太めの枠線
+ *
+ * 色が見分けにくい方や、白黒で印刷した場合でも区別できる。
+ * 「あなた」「AIカッシー」のラベルも残し、吹き出しと同じ側に置く。
+ */
+function Bubble({
+  role,
+  content,
+  muted = false,
+}: {
+  role: "user" | "assistant";
+  content: string;
+  /** 「考えています…」など、本文ではない案内を薄く出すとき */
+  muted?: boolean;
+}) {
   const mine = role === "user";
   return (
-    <li className={mine ? "max-w-[90%] self-end" : "max-w-[90%] self-start"}>
-      <p className="m-0 mb-1 text-sm font-bold text-neutral-600">
+    <li className={`flex flex-col ${mine ? "items-end" : "items-start"}`}>
+      <p className="m-0 mb-1 px-2 text-sm font-bold text-neutral-600">
         {mine ? "あなた" : "AIカッシー"}
       </p>
       <p
-        className={
+        className={[
+          "m-0 max-w-[85%] whitespace-pre-wrap px-5 py-4 rounded-2xl",
           mine
-            ? "m-0 whitespace-pre-wrap rounded bg-accent px-5 py-4 text-white"
-            : "m-0 whitespace-pre-wrap rounded border border-line bg-white px-5 py-4"
-        }
+            ? // 右下だけ直角にして、右（本人）から出た吹き出しに見せる
+              "rounded-br-none bg-accent text-white"
+            : // 左下だけ直角にして、左（AIカッシー）から出た吹き出しに見せる
+              "rounded-bl-none border-2 border-line bg-white",
+          muted ? "text-neutral-600" : "",
+        ].join(" ")}
       >
         {content}
       </p>

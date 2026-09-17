@@ -44,3 +44,6 @@ supabase/.temp/
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# 確認作業で撮ったスクリーンショット（アプリの一部ではない）
+/screenshots/
