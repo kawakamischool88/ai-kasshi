@@ -2,11 +2,11 @@
  * 原価計算としきい値判定のテスト。
  * 外部への接続はしない（計算だけを確かめる）。
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { PRICING } from "@/config/ai";
 import { estimateCostUsd, EMPTY_USAGE, usdToJpy } from "@/lib/ai/cost";
 import { judgeBudget } from "@/lib/ai/budget";
-import { monthStartJst, dateKeyJst } from "@/lib/time";
+import { monthStartJst, dateKeyJst, formatDateTimeJst, formatDateJst } from "@/lib/time";
 
 const MODEL = "claude-sonnet-5";
 
@@ -98,5 +98,44 @@ describe("集計期間（日本時間）", () => {
 
   it("日付のまとめ方も日本時間", () => {
     expect(dateKeyJst(new Date("2026-09-16T16:00:00Z"))).toBe("2026-09-17");
+  });
+});
+
+/**
+ * 本番（Vercel）のサーバーは世界標準時で動く。
+ * 画面に出す日時が、サーバーの時間帯に引きずられて9時間ずれる不具合が
+ * 実際に起きたため、どの時間帯でも日本時間で出ることを固定しておく。
+ */
+describe("画面に出す日時（日本時間で固定）", () => {
+  const 元のTZ = process.env.TZ;
+  afterEach(() => {
+    process.env.TZ = 元のTZ;
+  });
+
+  it("日時：日本時間で表示する", () => {
+    // 世界標準時 9:30 ＝ 日本時間 18:30
+    expect(formatDateTimeJst("2026-09-17T09:30:00Z")).toBe("2026年9月17日 18:30");
+  });
+
+  it("日時：サーバーが世界標準時でも同じ表示になる", () => {
+    process.env.TZ = "UTC";
+    expect(formatDateTimeJst("2026-09-17T09:30:00Z")).toBe("2026年9月17日 18:30");
+  });
+
+  it("日時：日付をまたぐ時刻でも正しい", () => {
+    // 世界標準時 9/16 16:00 ＝ 日本時間 9/17 1:00
+    process.env.TZ = "UTC";
+    expect(formatDateTimeJst("2026-09-16T16:00:00Z")).toBe("2026年9月17日 01:00");
+  });
+
+  it("日付：集計の開始日が日本時間の1日になる", () => {
+    process.env.TZ = "UTC";
+    // monthStartJst が返す「日本時間の9月1日0時」＝ 世界標準時 8/31 15:00
+    expect(formatDateJst(monthStartJst(new Date("2026-09-17T03:00:00Z")))).toBe("2026/9/1");
+  });
+
+  it("日付：Date でも文字列でも同じ結果になる", () => {
+    const iso = "2026-09-17T09:30:00Z";
+    expect(formatDateJst(iso)).toBe(formatDateJst(new Date(iso)));
   });
 });

@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getBudgetStatus } from "@/lib/ai/budget";
 import { formatCost } from "@/lib/ai/cost";
-import { dateKeyJst, monthStartJst } from "@/lib/time";
+import { dateKeyJst, formatDateJst, monthStartJst } from "@/lib/time";
 import { Header } from "@/app/Header";
 
 /**
@@ -60,7 +60,7 @@ export default async function CostPage() {
 
       <h2 className="mt-8 text-xl font-bold">利用状況（開発確認用）</h2>
       <p className="m-0 mt-1 text-sm text-neutral-600">
-        {since.toLocaleDateString("ja-JP")} 以降（日本時間の今月）／金額は推定です
+        {formatDateJst(since)} 以降（日本時間の今月）／金額は推定です
       </p>
 
       <dl className="mt-6 grid grid-cols-2 gap-x-6 gap-y-4">

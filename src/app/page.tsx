@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getBudgetStatus } from "@/lib/ai/budget";
 import { hasApiKey } from "@/lib/ai/anthropic";
+import { formatDateTimeJst } from "@/lib/time";
 import { createConversation } from "./actions";
 import { Header } from "./Header";
 
@@ -72,13 +73,7 @@ export default async function Home() {
                 >
                   <span className="text-lg">{c.title || "（まだ話していません）"}</span>
                   <span className="text-sm text-neutral-600">
-                    {new Date(c.last_message_at).toLocaleString("ja-JP", {
-                      year: "numeric",
-                      month: "long",
-                      day: "numeric",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
+                    {formatDateTimeJst(c.last_message_at)}
                   </span>
                 </Link>
               </li>
