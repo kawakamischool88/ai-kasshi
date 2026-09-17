@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useTransition } from "react";
 import { retryLastReply, sendMessage } from "@/app/actions";
 import { MemoryCard, type Candidate } from "./MemoryCard";
+import { MemorySource, type SourceMemory } from "./MemorySource";
 
 type Msg = { id: string; role: "user" | "assistant"; content: string };
 
@@ -21,6 +22,7 @@ export function Chat({
   budgetStopped,
   maxInputChars,
   candidates,
+  sources,
 }: {
   conversationId: string;
   messages: Msg[];
@@ -30,6 +32,8 @@ export function Chat({
   maxInputChars: number;
   /** 本人確認待ちの記憶候補。ないときは空。空なら記憶の画面は出さない */
   candidates: Candidate[];
+  /** AIの返事ごとの出典（実際に使った確定記憶）。返事のidで引く */
+  sources: Record<string, SourceMemory[]>;
 }) {
   const [draft, setDraft] = useState("");
   const [pendingText, setPendingText] = useState<string | null>(null);
@@ -101,7 +105,12 @@ export function Chat({
 
         <ul className="m-0 flex list-none flex-col gap-6 p-0">
           {messages.map((m) => (
-            <Bubble key={m.id} role={m.role} content={m.content} />
+            <Bubble
+              key={m.id}
+              role={m.role}
+              content={m.content}
+              source={m.role === "assistant" ? (sources[m.id] ?? []) : []}
+            />
           ))}
 
           {isPending && pendingText && <Bubble role="user" content={pendingText} />}
@@ -208,11 +217,14 @@ function Bubble({
   role,
   content,
   muted = false,
+  source = [],
 }: {
   role: "user" | "assistant";
   content: string;
   /** 「考えています…」など、本文ではない案内を薄く出すとき */
   muted?: boolean;
+  /** この返事に実際に使った確定記憶。空なら出典は出さない */
+  source?: SourceMemory[];
 }) {
   const mine = role === "user";
   return (
@@ -233,6 +245,7 @@ function Bubble({
       >
         {content}
       </p>
+      {!mine && source.length > 0 && <MemorySource memories={source} />}
     </li>
   );
 }

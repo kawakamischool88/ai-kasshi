@@ -4,12 +4,17 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
-import { AI, MEMORY } from "@/config/ai";
+import { AI, MEMORY, SEARCH } from "@/config/ai";
 import { chat, friendlyMessage, type ChatTurn } from "@/lib/ai/anthropic";
 import { estimateCostUsd, EMPTY_USAGE, type UsageCounts } from "@/lib/ai/cost";
 import { getBudgetStatus } from "@/lib/ai/budget";
 import { extractCandidates } from "@/lib/ai/memory";
 import { isSaveRequest } from "@/config/memory-prompt";
+import {
+  searchMemories,
+  fetchUsedMemoriesInConversation,
+  type Memory,
+} from "@/lib/ai/memory-search";
 
 /**
  * 【この画面の約束】
@@ -67,8 +72,9 @@ type UsageRow = {
   userId: string;
   conversationId: string;
   messageId: string | null;
-  /** 何のための呼び出しか。chat＝会話の返事、memory_extract＝記憶候補の抽出 */
-  operationType: "chat" | "memory_extract";
+  /** 何のための呼び出しか。
+      chat＝会話の返事、memory_extract＝記憶候補の抽出、memory_search＝関係する記憶の選び出し */
+  operationType: "chat" | "memory_extract" | "memory_search";
   model: string;
   usage: UsageCounts;
   thinkingTokens: number;
@@ -160,8 +166,45 @@ async function runTurn(
     return { ok: true };
   }
 
+  /* --- 確定記憶の検索（Phase 3B） ---
+     本人の確定記憶だけを対象に、いまの相談に関係するものを選ぶ。
+     失敗しても会話は続ける（記憶なしで答える）。 */
+  const lastUserText = history[history.length - 1].content;
+  const search = await searchMemories(supabase, userId, lastUserText);
+
+  if (search.call) {
+    const c = search.call;
+    await recordUsage(supabase, {
+      userId,
+      conversationId,
+      messageId: null,
+      operationType: "memory_search",
+      model: c.ok ? c.model : SEARCH.model,
+      usage: c.ok ? c.usage : EMPTY_USAGE,
+      thinkingTokens: c.ok ? c.thinkingTokens : 0,
+      serviceTier: c.ok ? c.serviceTier : null,
+      status: c.ok ? "success" : "error",
+      errorCode: c.ok ? null : c.errorCode,
+      durationMs: c.durationMs,
+    });
+    if (!c.ok) console.error("[記憶検索] 失敗（記憶なしで続行）:", c.errorCode, c.detail);
+  }
+
+  /* この会話ですでに使った記憶は、引き続き渡す。
+     渡さないと、AIが自分の前の発言を「根拠がない」と誤解して
+     正しかった内容を訂正してしまう（実際に起きた）。 */
+  const alreadyUsed = await fetchUsedMemoriesInConversation(supabase, userId, conversationId);
+  const injected: Memory[] = [];
+  let injectedChars = 0;
+  for (const m of [...alreadyUsed, ...search.selected]) {
+    if (injected.some((x) => x.id === m.id)) continue;
+    if (injectedChars + m.text.length > SEARCH.injectChars) continue;
+    injected.push(m);
+    injectedChars += m.text.length;
+  }
+
   // --- 呼び出し ---
-  const result = await chat(history);
+  const result = await chat(history, injected.map((m) => ({ id: m.id, text: m.text })));
 
   if (!result.ok) {
     await recordUsage(supabase, {
@@ -196,6 +239,13 @@ async function runTurn(
 
   if (saveError) console.error("[runTurn] 返事の保存に失敗:", saveError);
 
+  /* --- 出典の記録（Phase 3B） ---
+     渡した記憶のうち、AIが**実際に使った**と申告したものだけを記録する。
+     渡しただけのものを出典にすると、本人に嘘を伝えることになる。 */
+  if (saved?.id && result.usedMemoryNumbers.length > 0) {
+    await recordMemoryReferences(supabase, userId, saved.id, injected, result.usedMemoryNumbers);
+  }
+
   await recordUsage(supabase, {
     userId,
     conversationId,
@@ -224,6 +274,43 @@ async function runTurn(
   }
 
   return { ok: true };
+}
+
+// =============================================================
+// 出典の記録（Phase 3B）
+// =============================================================
+
+/**
+ * AIが実際に使ったと申告した記憶だけを、出典として記録する。
+ *
+ * 番号は「回答へ渡した記憶の並び順」。渡していない番号は捨てる。
+ * ここが失敗しても会話は壊さない（出典が出ないだけ）。
+ */
+async function recordMemoryReferences(
+  supabase: SupabaseClient,
+  userId: string,
+  messageId: string,
+  injected: Memory[],
+  usedNumbers: number[],
+) {
+  try {
+    const ids = new Set<string>();
+    for (const n of usedNumbers) {
+      const m = injected[n - 1];
+      if (m) ids.add(m.id);
+    }
+    if (ids.size === 0) return;
+
+    const rows = [...ids].map((memoryId) => ({
+      user_id: userId,
+      message_id: messageId,
+      memory_id: memoryId,
+    }));
+    const { error } = await supabase.from("memory_references").insert(rows);
+    if (error && error.code !== "23505") console.error("[出典] 記録に失敗:", error);
+  } catch (e) {
+    console.error("[出典] 想定外のエラー（会話は成功のまま）:", e);
+  }
 }
 
 // =============================================================

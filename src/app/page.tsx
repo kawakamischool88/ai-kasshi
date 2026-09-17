@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { getBudgetStatus } from "@/lib/ai/budget";
 import { hasApiKey } from "@/lib/ai/anthropic";
 import { formatDateTimeJst } from "@/lib/time";
-import { createConversation } from "./actions";
+import { createConversation, expireOldCandidates } from "./actions";
 import { Header } from "./Header";
 
 /** 会話の一覧。ここから新しく話し始めるか、過去の会話を開き直す */
@@ -15,13 +15,21 @@ export default async function Home() {
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const [{ data: conversations }, budget] = await Promise.all([
+  // 確認待ちの件数を数える前に、期限切れの印を付ける
+  await expireOldCandidates(supabase);
+
+  const [{ data: conversations }, budget, { count: pendingCount }] = await Promise.all([
     supabase
       .from("conversations")
       .select("id, title, last_message_at")
       .order("last_message_at", { ascending: false })
       .limit(100),
     getBudgetStatus(supabase),
+    supabase
+      .from("memory_candidates")
+      .select("id", { count: "exact", head: true })
+      .eq("status", "pending")
+      .gt("expires_at", new Date().toISOString()),
   ]);
 
   const list = conversations ?? [];
@@ -57,6 +65,22 @@ export default async function Home() {
           新しく話す
         </button>
       </form>
+
+      {/* 確認待ちの記憶があるときだけ入口を出す（Phase 3B） */}
+      {(pendingCount ?? 0) > 0 && (
+        <Link
+          href="/memories/pending"
+          className="mt-6 flex min-h-16 items-center gap-3 rounded-2xl border-2 border-line bg-white px-5 text-lg no-underline"
+        >
+          <span aria-hidden="true" className="text-2xl">
+            🧠
+          </span>
+          確認待ちの記憶 {pendingCount}件
+          <span aria-hidden="true" className="ml-auto">
+            ›
+          </span>
+        </Link>
+      )}
 
       <section className="mt-10">
         <h2 className="text-lg font-bold">これまでの会話</h2>

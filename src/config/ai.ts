@@ -69,6 +69,41 @@ export const MEMORY = {
 } as const;
 
 /**
+ * 確定記憶の検索（Phase 3B）。
+ *
+ * 【なぜ「意味の近さ」をAIに選ばせるのか】
+ * Anthropic は文章を数値に変換する仕組み（embedding）を提供しておらず、
+ * 公式には他社（Voyage AI など）を案内している。
+ * それを使うと **AI提供元がもう1社増える**（Phase 2 で「Anthropic 1社のみ」と決めた方針に反する）。
+ *
+ * いまの規模（利用者1名・記憶は数十件）なら、
+ * 「本人の確定記憶を絞って渡し、関係するものをAIに選ばせる」方法で十分に意味の近さを見られる。
+ * 日本語の言い換えにも強く、人名・商品名もそのまま読める。
+ *
+ * 記憶は本文をそのまま保存してあるので、
+ * 将来 embedding を使うことになっても、原文から作り直せる。
+ */
+export const SEARCH = {
+  /** 関係する記憶を選ぶのに使うモデル。将来ここだけ安いモデルにできる */
+  model: "claude-sonnet-5",
+  /** 選ぶだけの作業なので浅くてよい */
+  effort: "low" as const,
+  maxTokens: 300,
+
+  /** DBから取り出す確定記憶の上限（本人のぶんだけ） */
+  fetchLimit: 200,
+  /** AIに見せて選ばせる件数の上限 */
+  candidateLimit: 40,
+  /** AIに見せる記憶の合計文字数の上限 */
+  candidateChars: 4000,
+
+  /** 回答へ渡す記憶の件数の上限 */
+  maxInject: 3,
+  /** 回答へ渡す記憶の合計文字数の上限 */
+  injectChars: 600,
+} as const;
+
+/**
  * 公式API単価（USD / 100万トークン）。
  * 2026-09-17 に https://platform.claude.com/docs/en/about-claude/pricing で確認。
  *

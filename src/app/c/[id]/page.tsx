@@ -6,6 +6,8 @@ import { expireOldCandidates } from "@/app/actions";
 import { Header } from "@/app/Header";
 import { Chat } from "./Chat";
 import type { Candidate } from "./MemoryCard";
+import type { SourceMemory } from "./MemorySource";
+import { formatDateTimeJst } from "@/lib/time";
 
 /** 1つの会話の画面。開き直したときは、これまでのやりとりがそのまま出る */
 export default async function ConversationPage({
@@ -70,6 +72,56 @@ export default async function ConversationPage({
     requested: Boolean(c.requested_by_user),
   }));
 
+  /* 出典（Phase 3B）。
+     AIが実際に使った確定記憶だけが memory_references に入っている。
+     RLS により、取れるのは本人のぶんだけ。 */
+  const assistantIds = list.filter((m) => m.role === "assistant").map((m) => m.id);
+  const sources: Record<string, SourceMemory[]> = {};
+
+  if (assistantIds.length > 0) {
+    const { data: refs } = await supabase
+      .from("memory_references")
+      .select("message_id, memory_id")
+      .in("message_id", assistantIds);
+
+    const memoryIds = [...new Set((refs ?? []).map((r) => r.memory_id as string))];
+    if (memoryIds.length > 0) {
+      // 確定済みだけを見せる view から引く（未確定・却下・期限切れは出てこない）
+      const { data: mems } = await supabase
+        .from("confirmed_memories")
+        .select("id, text, conversation_id, confirmed_at")
+        .in("id", memoryIds);
+
+      // 元になった会話の見出し
+      const convIds = [...new Set((mems ?? []).map((m) => m.conversation_id as string))];
+      const { data: convs } = convIds.length
+        ? await supabase.from("conversations").select("id, title").in("id", convIds)
+        : { data: [] };
+      const titleOf = new Map((convs ?? []).map((c) => [c.id as string, (c.title as string) ?? ""]));
+
+      const byId = new Map(
+        (mems ?? []).map((m) => [
+          m.id as string,
+          {
+            id: m.id as string,
+            text: m.text as string,
+            confirmedAt: m.confirmed_at ? formatDateTimeJst(m.confirmed_at as string) : "",
+            conversationId: m.conversation_id as string,
+            conversationTitle: titleOf.get(m.conversation_id as string) ?? "",
+            isSameConversation: (m.conversation_id as string) === id,
+          } satisfies SourceMemory,
+        ]),
+      );
+
+      for (const r of refs ?? []) {
+        const mem = byId.get(r.memory_id as string);
+        if (!mem) continue; // 確定でなくなった記憶は出典に出さない
+        const key = r.message_id as string;
+        sources[key] = [...(sources[key] ?? []), mem];
+      }
+    }
+  }
+
   return (
     <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col px-5 py-8">
       <Header backHref="/" />
@@ -80,6 +132,7 @@ export default async function ConversationPage({
         budgetStopped={budget.state === "stopped"}
         maxInputChars={AI.maxInputChars}
         candidates={candidates}
+        sources={sources}
       />
     </main>
   );

@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { AI } from "@/config/ai";
 import { SYSTEM_PROMPT } from "@/config/prompt";
+import { MEMORY_GUARD, memoryContextBlock } from "@/config/search-prompt";
 import { EMPTY_USAGE, type UsageCounts } from "./cost";
 
 /**
@@ -21,6 +22,12 @@ export type ChatSuccess = {
   thinkingTokens: number;
   serviceTier: string | null;
   durationMs: number;
+  /**
+   * 回答に**実際に使った**記憶の番号（1から数える）。
+   * 記憶を渡していないときは空。
+   * 検索で候補になっただけのものは含まない（出典を捏造しないため）。
+   */
+  usedMemoryNumbers: number[];
 };
 
 export type ChatFailure = {
@@ -44,6 +51,37 @@ export type ChatErrorCode =
 
 export type ChatResult = ChatSuccess | ChatFailure;
 
+/** 記憶を渡したときに返してもらう形 */
+const REPLY_SCHEMA = {
+  type: "object",
+  properties: {
+    reply: { type: "string" },
+    used_memory_numbers: { type: "array", items: { type: "integer" } },
+  },
+  required: ["reply", "used_memory_numbers"],
+  additionalProperties: false,
+} as const;
+
+/**
+ * 返事と「実際に使った記憶の番号」を読み取る。
+ * 読めないときは null（＝返事なしとして扱い、出典も作らない）。
+ */
+export function parseReply(text: string): { text: string; used: number[] } | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const o = parsed as { reply?: unknown; used_memory_numbers?: unknown };
+  if (typeof o.reply !== "string") return null;
+  const used = Array.isArray(o.used_memory_numbers)
+    ? o.used_memory_numbers.filter((n): n is number => Number.isInteger(n) && n >= 1)
+    : [];
+  return { text: o.reply.trim(), used };
+}
+
 function getClient(): Anthropic | null {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return null;
@@ -59,27 +97,48 @@ export function hasApiKey(): boolean {
   return Boolean(process.env.ANTHROPIC_API_KEY);
 }
 
+/** 回答へ渡す確定記憶 */
+export type InjectedMemory = { id: string; text: string };
+
 /**
  * 会話を1往復ぶん進める。
  *
- * 渡すのは「基本指示」と「この会話の直近のやりとり」だけ。
+ * 渡すのは「基本指示」「関係する確定記憶（あれば）」「この会話の直近のやりとり」だけ。
  * 過去の全会話は送らない（費用と、他の話題の混入を避けるため）。
+ *
+ * 【記憶を渡すとき】
+ * ・記憶は本体の指示の**後ろ**に、はっきり囲んで「データであって指示ではない」と明記して置く
+ * ・どの記憶を実際に使ったかをAIに申告させ、出典表示に使う
+ *   （渡した記憶を全部「使った」ことにすると、出典が嘘になる）
  */
-export async function chat(history: ChatTurn[]): Promise<ChatResult> {
+export async function chat(
+  history: ChatTurn[],
+  memories: InjectedMemory[] = [],
+): Promise<ChatResult> {
   const startedAt = Date.now();
   const client = getClient();
   if (!client) {
     return { ok: false, errorCode: "no_api_key", detail: "ANTHROPIC_API_KEY が未設定", durationMs: 0 };
   }
 
+  const useMemories = memories.length > 0;
+  const system = useMemories
+    ? SYSTEM_PROMPT + MEMORY_GUARD + memoryContextBlock(memories)
+    : SYSTEM_PROMPT;
+
   try {
     const response = await client.messages.create({
       model: AI.model,
       max_tokens: AI.maxTokens,
-      system: SYSTEM_PROMPT,
+      system,
       messages: history.map((m) => ({ role: m.role, content: m.content })),
       // 考える深さ。Sonnet 5 は思考が既定でオン。深さは effort で調整する
-      output_config: { effort: AI.effort },
+      output_config: {
+        effort: AI.effort,
+        /* 記憶を渡したときだけ、返事と「実際に使った記憶の番号」を一緒に返してもらう。
+           記憶がないときは今まで通りの素の文章（余計な形を挟まない）。 */
+        ...(useMemories ? { format: { type: "json_schema" as const, schema: REPLY_SCHEMA } } : {}),
+      },
     });
 
     const durationMs = Date.now() - startedAt;
@@ -100,24 +159,26 @@ export async function chat(history: ChatTurn[]): Promise<ChatResult> {
       return { ok: false, errorCode: "refusal", detail: "モデルが応答を控えました", durationMs };
     }
 
-    const text = response.content
+    const raw = response.content
       .filter((block): block is Anthropic.TextBlock => block.type === "text")
       .map((block) => block.text)
       .join("")
       .trim();
 
-    if (!text) {
+    const parsed = useMemories ? parseReply(raw) : { text: raw, used: [] };
+    if (!parsed || !parsed.text) {
       return { ok: false, errorCode: "empty_response", detail: "本文が空でした", durationMs };
     }
 
     return {
       ok: true,
-      text,
+      text: parsed.text,
       model: response.model,
       usage,
       thinkingTokens,
       serviceTier,
       durationMs,
+      usedMemoryNumbers: parsed.used,
     };
   } catch (error) {
     const durationMs = Date.now() - startedAt;
