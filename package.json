@@ -15,7 +15,12 @@
     "db:diff": "supabase db diff",
     "config:push": "supabase config push",
     "dev:otp": "tsx scripts/dev-otp.ts",
-    "reset:test": "tsx scripts/reset-test-data.ts"
+    "reset:test": "tsx scripts/reset-test-data.ts",
+    "backup": "tsx scripts/backup.ts",
+    "ledger": "tsx scripts/ledger.ts",
+    "restore": "tsx scripts/restore.ts",
+    "restore:ledger": "tsx scripts/restore-ledger.ts",
+    "restore:verify": "tsx scripts/restore-verify.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.126.0",

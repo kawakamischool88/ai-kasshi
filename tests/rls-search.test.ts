@@ -67,8 +67,11 @@ async function seed(client: SupabaseClient, userId: string, label: string): Prom
     .single();
   if (e3) throw new Error(`返事 ${label}: ${e3.message}`);
 
-  // 同じ発言からは2件までなので、状態ごとに別の発言を出典にする
+  /* 同じ発言からは2件までなので、状態ごとに別の発言を出典にする。
+     Phase 4A 以降、却下・期限切れの候補は本文を持てない（DBの決まり）。
+     そのため、それらは本文なしで作る。 */
   const make = async (index: number, text: string, patch: Record<string, unknown>) => {
+    const closed = ["rejected", "expired"].includes(String(patch.status));
     const { data: src } = await client
       .from("messages")
       .insert({ conversation_id: conv.id, user_id: userId, role: "user", content: `${label}の発言${index}` })
@@ -81,7 +84,7 @@ async function seed(client: SupabaseClient, userId: string, label: string): Prom
         conversation_id: conv.id,
         source_message_id: src!.id,
         candidate_index: 1,
-        suggested_text: text,
+        suggested_text: closed ? null : text,
         origin: "self_experience",
         ...patch,
       })

@@ -457,7 +457,7 @@ describe("記憶が200件を超えても、古いものを検索できる", () =
 // ⑤ 期限切れの候補が、いまどうなっているか（調査）
 // =============================================================
 describe("期限切れの候補の、いまの保持状態", () => {
-  it("30日をすぎると「期限切れ」の印が付く。本文はDBに残る", async () => {
+  it("30日をすぎると「期限切れ」になり、本文も消える（Phase 4A で変更）", async () => {
     const conv = await newConversation("期限切れの調査");
     const q = await say(conv, "user", "期限切れの調査用の発言。");
     const past = new Date(Date.now() - 1000).toISOString();
@@ -477,23 +477,31 @@ describe("期限切れの候補の、いまの保持状態", () => {
       .select("id")
       .single();
 
-    // 画面を開いたときに行われるのと同じ処理
+    // 画面を開いたときに行われるのと同じ処理（Phase 4A から本文も消す）
     await a
       .from("memory_candidates")
-      .update({ status: "expired" })
+      .update({
+        status: "expired",
+        suggested_text: null,
+        confirmed_text: null,
+        extraction_reason: null,
+      })
       .eq("status", "pending")
       .lte("expires_at", new Date().toISOString());
 
     const { data: row } = await a
       .from("memory_candidates")
-      .select("status, suggested_text, confirmed_text, expires_at")
+      .select("status, suggested_text, confirmed_text, extraction_reason, expires_at")
       .eq("id", created!.id)
       .single();
 
-    // いまの動き：印は付くが、本文はそのまま残っている
+    /* Phase 3D の時点では本文が残っていた。Phase 4A で消すようにした。
+       残るのは、同じ候補を作り直さないための最小限だけ。 */
     expect(row?.status).toBe("expired");
-    expect(row?.suggested_text).toBe("期限切れになる予定の候補");
+    expect(row?.suggested_text).toBeNull();
     expect(row?.confirmed_text).toBeNull();
+    expect(row?.extraction_reason).toBeNull();
+    expect(row?.expires_at).toBeTruthy();
   });
 
   it("期限切れの候補は、確定記憶にも昔の考えにも出てこない", async () => {
@@ -501,6 +509,47 @@ describe("期限切れの候補の、いまの保持状態", () => {
     const past = await a.from("past_memories").select("text");
     const all = [...(current.data ?? []), ...(past.data ?? [])].map((r) => r.text as string);
     expect(all).not.toContain("期限切れになる予定の候補");
+  });
+
+  it("却下した候補も、本文が残らない", async () => {
+    const conv = await newConversation("却下の調査");
+    const q = await say(conv, "user", "却下の調査用の発言。");
+    const { data: created } = await a
+      .from("memory_candidates")
+      .insert({
+        user_id: idA,
+        conversation_id: conv,
+        source_message_id: q,
+        candidate_index: 1,
+        suggested_text: "残さないと言われる予定の候補",
+        origin: "self_experience",
+        status: "pending",
+      })
+      .select("id")
+      .single();
+
+    await a
+      .from("memory_candidates")
+      .update({
+        status: "rejected",
+        confirmed_at: new Date().toISOString(),
+        suggested_text: null,
+        confirmed_text: null,
+        extraction_reason: null,
+      })
+      .eq("id", created!.id);
+
+    const { data: row } = await a
+      .from("memory_candidates")
+      .select("status, suggested_text, source_message_id, candidate_index")
+      .eq("id", created!.id)
+      .single();
+
+    expect(row?.status).toBe("rejected");
+    expect(row?.suggested_text).toBeNull();
+    // 同じ候補を作り直さないための情報は残っている
+    expect(row?.source_message_id).toBe(q);
+    expect(row?.candidate_index).toBe(1);
   });
 
   it("期限切れの候補は、検索にも出てこない", async () => {

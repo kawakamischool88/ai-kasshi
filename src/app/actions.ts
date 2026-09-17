@@ -11,6 +11,7 @@ import { getBudgetStatus } from "@/lib/ai/budget";
 import { extractCandidates } from "@/lib/ai/memory";
 import { isSaveRequest } from "@/config/memory-prompt";
 import { asksAboutPast, detectRevisionIntent } from "@/config/revision-prompt";
+import { isRestoreMode } from "@/config/mode";
 import { findRevisionTargets } from "@/lib/ai/memory-revise";
 import {
   searchMemories,
@@ -144,6 +145,26 @@ async function blockedByBudget(
   model: string,
   messageId: string | null = null,
 ): Promise<boolean> {
+  /* 復元した直後の環境では、有料のAI処理を一切走らせない（Phase 4A）。
+     戻したDBに処理の途中の状態が残っていても、勝手に再開しない。
+     画面は proxy.ts で止めているが、万一ここまで来ても止まるようにしておく。 */
+  if (isRestoreMode()) {
+    await recordUsage(supabase, {
+      userId,
+      conversationId,
+      messageId,
+      operationType,
+      model,
+      usage: EMPTY_USAGE,
+      thinkingTokens: 0,
+      serviceTier: null,
+      status: "blocked",
+      errorCode: "restore_mode",
+      durationMs: 0,
+    });
+    return true;
+  }
+
   const budget = await getBudgetStatus(supabase);
   if (budget.state !== "stopped") return false;
 
@@ -511,7 +532,10 @@ async function extractAndSaveCandidates(
       .eq("conversation_id", conversationId)
       .order("created_at", { ascending: false })
       .limit(10);
-    const alreadySuggested = (past ?? []).map((r) => r.suggested_text as string);
+    // 本文を消した候補（残さない・期限切れ）は混ぜない
+    const alreadySuggested = (past ?? [])
+      .map((r) => r.suggested_text as string | null)
+      .filter((t): t is string => Boolean(t));
 
     const recent = history.slice(-MEMORY.contextMessageCount);
     const result = await extractCandidates(recent, requested, alreadySuggested);
@@ -678,9 +702,18 @@ export type MemoryResult = { ok: true } | { ok: false; message: string };
  * 対象がなければ何も起きない。閲覧しても期限は延びない。
  */
 export async function expireOldCandidates(supabase: SupabaseClient) {
+  /* 期限切れにするときは、同時に本文も消す（Phase 4A）。
+     30日は「確認の期限」であって、本文を保存しておく期間ではない。
+     本人の画面から見えなくなるだけで残り続けるのは、消したつもりとの食い違いになる。
+     残すのは、同じ候補を作り直さないための最小限だけ。 */
   const { error } = await supabase
     .from("memory_candidates")
-    .update({ status: "expired" })
+    .update({
+      status: "expired",
+      suggested_text: null,
+      confirmed_text: null,
+      extraction_reason: null,
+    })
     .eq("status", "pending")
     .lte("expires_at", new Date().toISOString());
   if (error) console.error("[記憶候補] 期限切れの更新に失敗:", error);
@@ -742,9 +775,18 @@ export async function confirmMemory(id: string, editedText?: string): Promise<Me
 export async function rejectMemory(id: string): Promise<MemoryResult> {
   const { supabase, userId } = await requireUser();
 
+  /* ［残さない］を選んだ時点で、本文も消す（Phase 4A）。
+     本人が「残さない」と決めたものを、DBに持ち続けない。
+     残すのは、同じ候補を作り直さないための最小限だけ。 */
   const { data, error } = await supabase
     .from("memory_candidates")
-    .update({ status: "rejected", confirmed_at: new Date().toISOString() })
+    .update({
+      status: "rejected",
+      confirmed_at: new Date().toISOString(),
+      suggested_text: null,
+      confirmed_text: null,
+      extraction_reason: null,
+    })
     .eq("id", id)
     .eq("user_id", userId)
     .eq("status", "pending")
