@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useTransition } from "react";
 import { retryLastReply, sendMessage } from "@/app/actions";
 import { MemoryCard, type Candidate } from "./MemoryCard";
 import { MemorySource, type SourceMemory } from "./MemorySource";
+import { RevisionCard, type RevisionProposal } from "./RevisionCard";
 
 type Msg = { id: string; role: "user" | "assistant"; content: string };
 
@@ -23,6 +24,7 @@ export function Chat({
   maxInputChars,
   candidates,
   sources,
+  proposals,
 }: {
   conversationId: string;
   messages: Msg[];
@@ -34,6 +36,9 @@ export function Chat({
   candidates: Candidate[];
   /** AIの返事ごとの出典（実際に使った確定記憶）。返事のidで引く */
   sources: Record<string, SourceMemory[]>;
+  /** 記憶の訂正・変化・削除の確認（Phase 3C）。ないときは空。
+      ここに出ている間は、記憶はまだ何も変わっていない */
+  proposals: RevisionProposal[];
 }) {
   const [draft, setDraft] = useState("");
   const [pendingText, setPendingText] = useState<string | null>(null);
@@ -121,6 +126,11 @@ export function Chat({
         {/* 記憶候補。候補がないときは何も出さない */}
         {!isPending &&
           candidates.map((c) => <MemoryCard key={c.id} candidate={c} />)}
+
+        {/* 記憶の訂正・変化・削除の確認（Phase 3C）。
+            提案がないときは何も出さない */}
+        {!isPending &&
+          proposals.map((p) => <RevisionCard key={p.id} proposal={p} />)}
 
         <div ref={bottomRef} />
       </div>

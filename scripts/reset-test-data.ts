@@ -49,13 +49,19 @@ async function main() {
     if (conv.error) throw conv.error;
     const usage = await admin.from("ai_usage").delete().eq("user_id", u.id).select("id");
     if (usage.error) throw usage.error;
+
+    /* 削除の記録は、会話を消しても残るように作ってある（外部キーを張っていない）。
+       架空ユーザーのぶんだけ、ここで明示的に消す。 */
+    const dels = await admin.from("memory_deletions").delete().eq("user_id", u.id).select("id");
+    if (dels.error) throw dels.error;
+
     console.log(
-      `${u.email}：会話 ${conv.data?.length ?? 0} 件 / 利用記録 ${usage.data?.length ?? 0} 件を削除`,
+      `${u.email}：会話 ${conv.data?.length ?? 0} 件 / 利用記録 ${usage.data?.length ?? 0} 件 / 削除の記録 ${dels.data?.length ?? 0} 件を削除`,
     );
   }
 
   // 残っていないか確かめる
-  for (const table of ["conversations", "messages", "ai_usage"] as const) {
+  for (const table of ["conversations", "messages", "ai_usage", "memory_deletions"] as const) {
     const { count } = await admin.from(table).select("*", { count: "exact", head: true });
     console.log(`  残り ${table}: ${count ?? 0} 件`);
   }

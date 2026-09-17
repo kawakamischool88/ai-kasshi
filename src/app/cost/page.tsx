@@ -21,7 +21,7 @@ export default async function CostPage() {
     supabase
       .from("ai_usage")
       .select(
-        "created_at, model, status, error_code, input_tokens, output_tokens, thinking_tokens, estimated_cost, duration_ms, pricing_version",
+        "created_at, model, status, error_code, operation_type, input_tokens, output_tokens, thinking_tokens, estimated_cost, duration_ms, pricing_version",
       )
       .gte("created_at", since.toISOString())
       .order("created_at", { ascending: false }),
@@ -51,6 +51,17 @@ export default async function CostPage() {
   }
   const days = [...byDay.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1));
 
+  /* 何のための呼び出しかごとの内訳（Phase 3C）。
+     会話・記憶の検索・記憶候補の抽出・記憶の操作の対象探しで、
+     それぞれどれだけかかっているかを見るため。 */
+  const byOperation = new Map<string, { count: number; usd: number }>();
+  for (const r of success) {
+    const key = (r.operation_type as string) ?? "不明";
+    const cur = byOperation.get(key) ?? { count: 0, usd: 0 };
+    byOperation.set(key, { count: cur.count + 1, usd: cur.usd + Number(r.estimated_cost ?? 0) });
+  }
+  const operations = [...byOperation.entries()].sort((a, b) => b[1].usd - a[1].usd);
+
   const stateLabel =
     budget.state === "stopped" ? "停止中" : budget.state === "warning" ? "警告" : "通常";
 
@@ -77,6 +88,32 @@ export default async function CostPage() {
         <Item label="うち思考ぶん" value={thinkingTokens.toLocaleString("ja-JP")} />
         <Item label="平均の待ち時間" value={avgMs ? `${(avgMs / 1000).toFixed(1)} 秒` : "—"} />
       </dl>
+
+      <h3 className="mt-10 text-lg font-bold">何のための呼び出しか</h3>
+      {operations.length === 0 ? (
+        <p className="mt-3 text-neutral-600">まだ記録がありません。</p>
+      ) : (
+        <table className="mt-3 w-full border-collapse text-base">
+          <thead>
+            <tr className="border-b border-line text-left">
+              <th className="py-2">種類</th>
+              <th className="py-2">回数</th>
+              <th className="py-2">推定原価</th>
+              <th className="py-2">1回あたり</th>
+            </tr>
+          </thead>
+          <tbody>
+            {operations.map(([op, v]) => (
+              <tr key={op} className="border-b border-line">
+                <td className="py-2">{OPERATION_LABEL[op] ?? op}</td>
+                <td className="py-2">{v.count}</td>
+                <td className="py-2">{formatCost(v.usd)}</td>
+                <td className="py-2">{formatCost(v.usd / v.count)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
 
       <h3 className="mt-10 text-lg font-bold">日ごと</h3>
       {days.length === 0 ? (
@@ -123,6 +160,14 @@ export default async function CostPage() {
     </main>
   );
 }
+
+/** 呼び出しの種類の言い換え（この画面は開発確認用だが、読みやすくしておく） */
+const OPERATION_LABEL: Record<string, string> = {
+  chat: "会話の返事",
+  memory_search: "記憶の検索",
+  memory_extract: "記憶候補の取り出し",
+  memory_revise: "訂正・削除の対象探し",
+};
 
 function Item({ label, value }: { label: string; value: string }) {
   return (

@@ -101,6 +101,40 @@ export const SEARCH = {
   maxInject: 3,
   /** 回答へ渡す記憶の合計文字数の上限 */
   injectChars: 600,
+
+  /**
+   * 「昔はどう考えていた？」と聞かれたときに、検索へ加える過去の考えの上限（Phase 3C）。
+   * ふだんの会話では0件（現在有効な内容だけを見る）。
+   */
+  pastFetchLimit: 50,
+} as const;
+
+/**
+ * 記憶の訂正・考えの変化・削除の「対象探し」（Phase 3C）。
+ *
+ * 【AIにできるのは探すところまで】
+ * ここで呼ぶAIは、対象を挙げて新しい文章の案を書くだけ。
+ * 実際に記憶を書き換えるのは、本人が画面でボタンを押したときだけ。
+ *
+ * ふだんの会話では呼ばない。
+ * 「消して」「違う」「考えが変わった」といった言い方が出たときだけ呼ぶ
+ * （src/config/revision-prompt.ts の detectRevisionIntent）。
+ */
+export const REVISE = {
+  model: "claude-sonnet-5",
+  /** 探して1〜2件挙げるだけなので浅くてよい */
+  effort: "low" as const,
+  maxTokens: 600,
+
+  /** AIに見せる記憶の件数の上限 */
+  candidateLimit: 40,
+  /** AIに見せる記憶の合計文字数の上限 */
+  candidateChars: 4000,
+
+  /** 本人に見せる提案の件数の上限（曖昧なときだけ2件） */
+  maxTargets: 2,
+  /** 新しい文章の案の長さの上限 */
+  maxTextChars: 500,
 } as const;
 
 /**

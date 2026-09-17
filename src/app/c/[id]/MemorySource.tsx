@@ -3,11 +3,24 @@
 import { useState } from "react";
 import Link from "next/link";
 
+/**
+ * その記憶が、いまどうなっているか（Phase 3C）。
+ *   current  … いまも有効な内容
+ *   corrected… そのあと訂正された（参照したのは訂正前の内容）
+ *   past     … そのあと考えが変わった（参照したのは当時の考え）
+ *   deleted  … そのあと本人が削除した（本文は出さない）
+ */
+export type SourceState = "current" | "corrected" | "past" | "deleted";
+
 export type SourceMemory = {
   id: string;
+  /** 記憶の文章。削除されたものは空（本文を残さない） */
   text: string;
-  /** 本人が確定した日時（日本時間の文字列） */
+  /** 本人が確定した日時（日本時間の文字列）。削除されたものは空 */
   confirmedAt: string;
+  state: SourceState;
+  /** 訂正・考えの変化のあとの、いまの内容。なければ空 */
+  currentText: string;
   /** 元になった会話 */
   conversationId: string;
   /** 元になった会話の見出し */
@@ -17,10 +30,16 @@ export type SourceMemory = {
 };
 
 /**
- * 出典の表示（Phase 3B）。
+ * 出典の表示（Phase 3B / 3C）。
  *
  * AIが**実際に回答へ使った**確定記憶があるときだけ出す。
  * 検索で候補になっただけのものは出さない。
+ *
+ * 【あとから直された・消されたとき（Phase 3C）】
+ * 過去の回答は、そのときの内容にもとづいて作られている。
+ * あとで訂正・削除されても、その回答の文面は変わらない。
+ * だから「この回答は当時の内容を参照していた」と分かるようにする。
+ * **削除された記憶の本文は、ここに残さない。**
  *
  * 画面には、記憶の文章・本人が確定した日時・元になった会話だけを出す。
  * 内部の番号や、似ている度合いのような専門用語は出さない。
@@ -48,21 +67,56 @@ export function MemorySource({ memories }: { memories: SourceMemory[] }) {
         <ul className="m-0 mt-2 list-none rounded-xl border border-line bg-white p-0">
           {memories.map((m) => (
             <li key={m.id} className="border-b border-line px-4 py-4 last:border-b-0">
-              <p className="m-0 text-base">「{m.text}」</p>
-              <p className="m-0 mt-2 text-sm text-neutral-600">
-                残した日：{m.confirmedAt}
-              </p>
+              {m.state === "deleted" ? (
+                /* 削除された記憶の本文は出さない。
+                   「参考にしたものが、そのあと消された」ことだけ伝える */
+                <p className="m-0 text-base text-neutral-700">
+                  この返事で参考にした内容は、そのあと消されました。
+                </p>
+              ) : (
+                <>
+                  <p className="m-0 text-base">「{m.text}」</p>
+
+                  {m.state === "corrected" && (
+                    <p className="m-0 mt-2 rounded-xl bg-background px-3 py-2 text-base text-neutral-700">
+                      この返事では、訂正される前の内容を参考にしていました。
+                      {m.currentText && (
+                        <>
+                          <br />
+                          いまの内容：「{m.currentText}」
+                        </>
+                      )}
+                    </p>
+                  )}
+
+                  {m.state === "past" && (
+                    <p className="m-0 mt-2 rounded-xl bg-background px-3 py-2 text-base text-neutral-700">
+                      この返事では、当時の考えを参考にしていました。そのあと考えが変わっています。
+                      {m.currentText && (
+                        <>
+                          <br />
+                          いまの考え：「{m.currentText}」
+                        </>
+                      )}
+                    </p>
+                  )}
+
+                  {m.confirmedAt && (
+                    <p className="m-0 mt-2 text-sm text-neutral-600">残した日：{m.confirmedAt}</p>
+                  )}
+                </>
+              )}
+
               <p className="m-0 mt-1 text-sm text-neutral-600">
                 元の会話：
                 {m.isSameConversation ? (
                   <span>この会話</span>
-                ) : (
-                  <Link
-                    href={`/c/${m.conversationId}`}
-                    className="underline underline-offset-4"
-                  >
+                ) : m.conversationId ? (
+                  <Link href={`/c/${m.conversationId}`} className="underline underline-offset-4">
                     {m.conversationTitle || "（見出しなし）"}
                   </Link>
+                ) : (
+                  <span>（消されています）</span>
                 )}
               </p>
             </li>

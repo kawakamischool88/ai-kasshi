@@ -4,15 +4,18 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
-import { AI, MEMORY, SEARCH } from "@/config/ai";
+import { AI, MEMORY, REVISE, SEARCH } from "@/config/ai";
 import { chat, friendlyMessage, type ChatTurn } from "@/lib/ai/anthropic";
 import { estimateCostUsd, EMPTY_USAGE, type UsageCounts } from "@/lib/ai/cost";
 import { getBudgetStatus } from "@/lib/ai/budget";
 import { extractCandidates } from "@/lib/ai/memory";
 import { isSaveRequest } from "@/config/memory-prompt";
+import { asksAboutPast, detectRevisionIntent } from "@/config/revision-prompt";
+import { findRevisionTargets } from "@/lib/ai/memory-revise";
 import {
   searchMemories,
   fetchUsedMemoriesInConversation,
+  keepStillUsable,
   type Memory,
 } from "@/lib/ai/memory-search";
 
@@ -73,8 +76,9 @@ type UsageRow = {
   conversationId: string;
   messageId: string | null;
   /** 何のための呼び出しか。
-      chat＝会話の返事、memory_extract＝記憶候補の抽出、memory_search＝関係する記憶の選び出し */
-  operationType: "chat" | "memory_extract" | "memory_search";
+      chat＝会話の返事、memory_extract＝記憶候補の抽出、memory_search＝関係する記憶の選び出し、
+      memory_revise＝訂正・変化・削除の対象探し */
+  operationType: "chat" | "memory_extract" | "memory_search" | "memory_revise";
   model: string;
   usage: UsageCounts;
   thinkingTokens: number;
@@ -170,7 +174,10 @@ async function runTurn(
      本人の確定記憶だけを対象に、いまの相談に関係するものを選ぶ。
      失敗しても会話は続ける（記憶なしで答える）。 */
   const lastUserText = history[history.length - 1].content;
-  const search = await searchMemories(supabase, userId, lastUserText);
+  /* 「昔はどう考えていた？」と聞かれたときだけ、過去の考えも検索に加える（Phase 3C）。
+     ふだんは現在有効な内容だけを見る（昔と今を混ぜないため）。 */
+  const wantsPast = asksAboutPast(lastUserText);
+  const search = await searchMemories(supabase, userId, lastUserText, wantsPast);
 
   if (search.call) {
     const c = search.call;
@@ -194,17 +201,25 @@ async function runTurn(
      渡さないと、AIが自分の前の発言を「根拠がない」と誤解して
      正しかった内容を訂正してしまう（実際に起きた）。 */
   const alreadyUsed = await fetchUsedMemoriesInConversation(supabase, userId, conversationId);
-  const injected: Memory[] = [];
+  const merged: Memory[] = [];
   let injectedChars = 0;
   for (const m of [...alreadyUsed, ...search.selected]) {
-    if (injected.some((x) => x.id === m.id)) continue;
+    if (merged.some((x) => x.id === m.id)) continue;
     if (injectedChars + m.text.length > SEARCH.injectChars) continue;
-    injected.push(m);
+    merged.push(m);
     injectedChars += m.text.length;
   }
 
+  /* 渡す直前に、その記憶がいまも使えるかを確かめ直す（Phase 3C）。
+     検索してからここへ来るまでの間に、別の画面で削除・訂正が行われていることがある。
+     古い検索結果をそのまま渡すと、消したはずの内容が回答に出てしまう。 */
+  const injected = await keepStillUsable(supabase, userId, merged);
+
   // --- 呼び出し ---
-  const result = await chat(history, injected.map((m) => ({ id: m.id, text: m.text })));
+  const result = await chat(
+    history,
+    injected.map((m) => ({ id: m.id, text: m.text, isPast: m.isPast })),
+  );
 
   if (!result.ok) {
     await recordUsage(supabase, {
@@ -271,6 +286,17 @@ async function runTurn(
   const sourceMessageId = await findLastUserMessageId(supabase, conversationId);
   if (sourceMessageId) {
     await extractAndSaveCandidates(supabase, userId, conversationId, sourceMessageId, history);
+
+    /* --- 訂正・考えの変化・削除の対象探し（Phase 3C） ---
+       「それ違うよ」「○○の記憶を消して」等と言われたときだけ走る。
+       ここで作るのは**本人への提案だけ**で、記憶は何も書き換わらない。 */
+    await findAndSaveRevisionRequests(
+      supabase,
+      userId,
+      conversationId,
+      sourceMessageId,
+      lastUserText,
+    );
   }
 
   return { ok: true };
@@ -359,6 +385,23 @@ async function extractAndSaveCandidates(
       .eq("source_message_id", sourceMessageId)
       .limit(1);
     if (already && already.length > 0) return;
+
+    /* この発言から作った記憶を、本人が削除していないか確かめる（Phase 3C）。
+       元の会話は残るので、何もしないと同じ発言から同じ記憶が
+       ふたたび作られてしまう（消したはずの内容の復活）。
+
+       候補の行そのものも残る（本文を消して deleted にする）ので、
+       上の「すでに候補がある」判定と、DBの一意の決まりでも止まる。
+       ここはその3つ目の備え。 */
+    const { data: deleted } = await supabase
+      .from("memory_deletions")
+      .select("id")
+      .eq("source_message_id", sourceMessageId)
+      .limit(1);
+    if (deleted && deleted.length > 0) {
+      console.warn("[記憶候補] この発言から作った記憶は削除済みのため、作り直さない");
+      return;
+    }
 
     const lastUserText = [...history].reverse().find((m) => m.role === "user")?.content ?? "";
     const requested = isSaveRequest(lastUserText);
@@ -619,5 +662,298 @@ export async function rejectMemory(id: string): Promise<MemoryResult> {
   }
 
   // 確定のときと同じ理由で、ここでも画面を作り直さない
+  return { ok: true };
+}
+
+// =============================================================
+// 記憶の訂正・考えの変化・削除（Phase 3C）
+//
+// 【いちばん大事な決まり】
+// AIができるのは「これのことですか？」と提案するところまで。
+// 記憶が実際に変わるのは、本人がこの下のボタンを押したときだけ。
+// =============================================================
+
+/**
+ * 「それ違うよ」「○○の記憶を消して」等の発言から、対象の記憶を探して提案を作る。
+ *
+ * 【ここでは何も書き換えない】
+ * 作るのは memory_revision_requests（提案）だけ。
+ * 記憶そのものには一切手を触れない。
+ *
+ * 【失敗しても会話は壊さない】
+ * ここで何が起きても例外を外へ出さない。提案が作れなければ、
+ * 単に確認のカードが出ないだけで、会話は成功のまま。
+ */
+async function findAndSaveRevisionRequests(
+  supabase: SupabaseClient,
+  userId: string,
+  conversationId: string,
+  sourceMessageId: string,
+  utterance: string,
+) {
+  try {
+    /* まず言葉で絞る。手がかりがなければAIを呼ばない
+       （ふだんの会話に余計な費用をかけないため）。 */
+    if (!detectRevisionIntent(utterance)) return;
+
+    // すでにこの発言から提案を作っていれば、もう作らない（二重実行・再試行の対策）
+    const { data: already } = await supabase
+      .from("memory_revision_requests")
+      .select("id")
+      .eq("source_message_id", sourceMessageId)
+      .limit(1);
+    if (already && already.length > 0) return;
+
+    const outcome = await findRevisionTargets(supabase, userId, utterance);
+
+    if (outcome.call) {
+      const c = outcome.call;
+      await recordUsage(supabase, {
+        userId,
+        conversationId,
+        messageId: sourceMessageId,
+        operationType: "memory_revise",
+        model: c.ok ? c.model : REVISE.model,
+        usage: c.ok ? c.usage : EMPTY_USAGE,
+        thinkingTokens: c.ok ? c.thinkingTokens : 0,
+        serviceTier: c.ok ? c.serviceTier : null,
+        status: c.ok ? "success" : "error",
+        errorCode: c.ok ? null : c.errorCode,
+        durationMs: c.durationMs,
+      });
+      if (!c.ok) {
+        console.error("[記憶の操作] 対象探しに失敗（会話は成功のまま）:", c.errorCode, c.detail);
+        return;
+      }
+    }
+
+    // 対象が見つからないのは正常。勝手に対象を決めない
+    if (outcome.targets.length === 0) return;
+
+    const rows = outcome.targets.map((t, i) => ({
+      user_id: userId,
+      conversation_id: conversationId,
+      source_message_id: sourceMessageId,
+      request_index: i + 1,
+      intent: t.intent,
+      target_memory_id: t.memory.id,
+      proposed_text: t.proposedText,
+      reason: t.reason,
+      status: "pending",
+    }));
+
+    const { error } = await supabase.from("memory_revision_requests").insert(rows);
+    // 23505 = 同じ発言から既に提案がある（二重実行）。それ以外は記録に残す
+    if (error && error.code !== "23505") console.error("[記憶の操作] 提案の保存に失敗:", error);
+  } catch (e) {
+    console.error("[記憶の操作] 想定外のエラー（会話は成功のまま）:", e);
+  }
+}
+
+/** 同じ発言から出ていた他の提案（「どちらのことですか」の片方）を閉じる */
+async function closeSiblingRequests(
+  supabase: SupabaseClient,
+  userId: string,
+  requestId: string,
+  sourceMessageId: string,
+) {
+  const { error } = await supabase
+    .from("memory_revision_requests")
+    .update({ status: "dismissed", resolved_at: new Date().toISOString() })
+    .eq("user_id", userId)
+    .eq("source_message_id", sourceMessageId)
+    .eq("status", "pending")
+    .neq("id", requestId);
+  if (error) console.error("[記憶の操作] 他の提案を閉じられませんでした:", error);
+}
+
+/** 提案を1件読む。自分のもので、まだ判断していないものだけ */
+async function loadPendingRequest(supabase: SupabaseClient, userId: string, requestId: string) {
+  const { data } = await supabase
+    .from("memory_revision_requests")
+    .select("id, intent, target_memory_id, proposed_text, conversation_id, source_message_id")
+    .eq("id", requestId)
+    .eq("user_id", userId)
+    .eq("status", "pending")
+    .maybeSingle();
+  return data;
+}
+
+/**
+ * ［訂正する］／［考えの変化として残す］。
+ *
+ * kind は本人が押したボタンで決まる。AIの見立てではない。
+ *   correction … 内容が間違っていた。前の内容は無効になる
+ *   update     … 考えが変わった。前の考えは「以前の考え」として残る
+ *
+ * 【同時に走っている処理への備え】
+ * 新しい記憶を足すことと、古い記憶を無効にすることは、
+ * DB側でひとまとめに行う（revise_memory）。
+ * 途中で止まって内容が2つになったり、消えたりすることはない。
+ * すでに他の処理が直していたら、何も起きずに「もう直せません」と返る。
+ */
+export async function applyRevision(input: {
+  requestId: string;
+  kind: "correction" | "update";
+  text: string;
+}): Promise<MemoryResult> {
+  const { supabase, userId } = await requireUser();
+
+  const text = input.text.trim();
+  if (!text) return { ok: false, message: "新しい内容を入力してください。" };
+  if (text.length > REVISE.maxTextChars) {
+    return { ok: false, message: "長すぎます。500文字までにしてください。" };
+  }
+
+  const request = await loadPendingRequest(supabase, userId, input.requestId);
+  if (!request) {
+    return { ok: false, message: "この内容は、もう処理できません。画面を開き直してみてください。" };
+  }
+
+  const { data: newId, error } = await supabase.rpc("revise_memory", {
+    target: request.target_memory_id as string,
+    kind: input.kind,
+    new_text: text,
+    in_conversation: request.conversation_id as string,
+    in_message: request.source_message_id as string,
+    note: input.kind === "correction" ? "本人が訂正" : "本人の考えの変化",
+  });
+
+  if (error) {
+    console.error("[記憶の操作] 訂正・変化に失敗:", error);
+    return { ok: false, message: "うまく処理できませんでした。もう一度お試しください。" };
+  }
+  if (!newId) {
+    // すでに直された・消された・現在有効な内容ではない
+    return {
+      ok: false,
+      message: "この記憶は、すでに直されたか消されています。画面を開き直してみてください。",
+    };
+  }
+
+  await supabase
+    .from("memory_revision_requests")
+    .update({ status: "done", resolved_at: new Date().toISOString() })
+    .eq("id", request.id as string)
+    .eq("user_id", userId);
+
+  await closeSiblingRequests(
+    supabase,
+    userId,
+    request.id as string,
+    request.source_message_id as string,
+  );
+
+  /* ここで画面を作り直さない。
+     作り直すと結果の表示が消え、本人に伝わらないまま終わってしまう。
+     （Phase 3A で実際に起きたので、同じ作りにしている） */
+  return { ok: true };
+}
+
+/** 削除の結果。消した件数も返す（本人に範囲を伝えるため） */
+export type DeleteResult = { ok: true; removed: number } | { ok: false; message: string };
+
+/** 記憶だけを消す処理の本体。元の会話・発言はそのまま残る */
+async function runDeleteMemory(supabase: SupabaseClient, memoryId: string): Promise<DeleteResult> {
+  const { data: removed, error } = await supabase.rpc("delete_memory", { target: memoryId });
+
+  if (error) {
+    console.error("[記憶の操作] 削除に失敗:", error);
+    return { ok: false, message: "うまく消せませんでした。もう一度お試しください。" };
+  }
+  if (!removed) {
+    return { ok: false, message: "この記憶は、すでに消されています。画面を開き直してみてください。" };
+  }
+  return { ok: true, removed: removed as number };
+}
+
+/**
+ * ［削除する］（会話の中の確認から）。
+ *
+ * つながっている版（訂正前・考えが変わる前）もまとめて消す。
+ * 片方だけ残すと、消したはずの内容が「以前の考え」として出てきてしまう。
+ */
+export async function deleteMemoryByRequest(requestId: string): Promise<DeleteResult> {
+  const { supabase, userId } = await requireUser();
+
+  const request = await loadPendingRequest(supabase, userId, requestId);
+  if (!request) {
+    return { ok: false, message: "この内容は、もう処理できません。画面を開き直してみてください。" };
+  }
+
+  const result = await runDeleteMemory(supabase, request.target_memory_id as string);
+  if (!result.ok) return result;
+
+  await supabase
+    .from("memory_revision_requests")
+    .update({ status: "done", resolved_at: new Date().toISOString() })
+    .eq("id", request.id as string)
+    .eq("user_id", userId);
+
+  await closeSiblingRequests(
+    supabase,
+    userId,
+    request.id as string,
+    request.source_message_id as string,
+  );
+
+  return result;
+}
+
+/**
+ * ［削除する］（記憶の一覧から）。
+ *
+ * ここで画面を作り直さない。
+ * 作り直すと「消しました」の表示が一覧の作り直しで消えてしまい、
+ * 本人に結果が伝わらないまま終わる（Phase 3A で実際に起きた）。
+ * 次に画面を開いたときには、一覧から消えている。
+ */
+export async function deleteMemory(memoryId: string): Promise<DeleteResult> {
+  const { supabase } = await requireUser();
+  return runDeleteMemory(supabase, memoryId);
+}
+
+/** ［やめる］。記憶は何も変わらない */
+export async function dismissRevisionRequest(requestId: string): Promise<MemoryResult> {
+  const { supabase, userId } = await requireUser();
+
+  const { data, error } = await supabase
+    .from("memory_revision_requests")
+    .update({ status: "dismissed", resolved_at: new Date().toISOString() })
+    .eq("id", requestId)
+    .eq("user_id", userId)
+    .eq("status", "pending")
+    .select("id");
+
+  if (error) {
+    console.error("[記憶の操作] 取りやめに失敗:", error);
+    return { ok: false, message: "うまく処理できませんでした。もう一度お試しください。" };
+  }
+  if (!data || data.length === 0) return { ok: false, message: "この内容は、もう処理できません。" };
+  return { ok: true };
+}
+
+/**
+ * 会話ごと消す。
+ *
+ * 会話・その中の発言・そこから作られた記憶候補と確定記憶・出典が、
+ * まとめて消える。原価の記録だけは残る（会話との結び付きが外れるだけ）。
+ *
+ * 消える前に、削除の記録（本文を持たない）をDB側で残す。
+ */
+export async function deleteConversation(conversationId: string): Promise<MemoryResult> {
+  const { supabase } = await requireUser();
+
+  const { error } = await supabase.rpc("delete_conversation_with_memories", {
+    target: conversationId,
+  });
+
+  if (error) {
+    console.error("[会話の削除] 失敗:", error);
+    return { ok: false, message: "うまく消せませんでした。もう一度お試しください。" };
+  }
+
+  revalidatePath("/");
+  revalidatePath("/memories");
   return { ok: true };
 }

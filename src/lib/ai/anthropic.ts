@@ -97,8 +97,8 @@ export function hasApiKey(): boolean {
   return Boolean(process.env.ANTHROPIC_API_KEY);
 }
 
-/** 回答へ渡す確定記憶 */
-export type InjectedMemory = { id: string; text: string };
+/** 回答へ渡す確定記憶。isPast＝考えが変わる前の古い考え（Phase 3C） */
+export type InjectedMemory = { id: string; text: string; isPast?: boolean };
 
 /**
  * 会話を1往復ぶん進める。

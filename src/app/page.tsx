@@ -18,7 +18,8 @@ export default async function Home() {
   // 確認待ちの件数を数える前に、期限切れの印を付ける
   await expireOldCandidates(supabase);
 
-  const [{ data: conversations }, budget, { count: pendingCount }] = await Promise.all([
+  const [{ data: conversations }, budget, { count: pendingCount }, { count: memoryCount }] =
+    await Promise.all([
     supabase
       .from("conversations")
       .select("id, title, last_message_at")
@@ -30,6 +31,8 @@ export default async function Home() {
       .select("id", { count: "exact", head: true })
       .eq("status", "pending")
       .gt("expires_at", new Date().toISOString()),
+    // 残してある内容の件数（Phase 3C）
+    supabase.from("confirmed_memories").select("id", { count: "exact", head: true }),
   ]);
 
   const list = conversations ?? [];
@@ -81,6 +84,22 @@ export default async function Home() {
           </span>
         </Link>
       )}
+
+      {/* 残してある内容の一覧（Phase 3C）。
+          訂正・考えの変化・削除は会話の中でもできるが、
+          対象を自分の目で確かめて確実に消せる場所も用意する */}
+      <Link
+        href="/memories"
+        className="mt-4 flex min-h-16 items-center gap-3 rounded-2xl border-2 border-line bg-white px-5 text-lg no-underline"
+      >
+        <span aria-hidden="true" className="text-2xl">
+          📒
+        </span>
+        カッシーに残してある内容 {memoryCount ?? 0}件
+        <span aria-hidden="true" className="ml-auto">
+          ›
+        </span>
+      </Link>
 
       <section className="mt-10">
         <h2 className="text-lg font-bold">これまでの会話</h2>

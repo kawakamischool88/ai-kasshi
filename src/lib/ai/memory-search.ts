@@ -22,6 +22,11 @@ export type Memory = {
   text: string;
   conversationId: string;
   confirmedAt: string | null;
+  /**
+   * 「考えが変わる前の考え」か（Phase 3C）。
+   * ふだんの検索では出てこない。昔を聞かれたときだけ混ざる。
+   */
+  isPast: boolean;
 };
 
 export type SearchOutcome = {
@@ -89,6 +94,11 @@ export async function fetchCandidateMemories(
   supabase: SupabaseClient,
   userId: string,
   question: string,
+  /**
+   * 「昔はどう考えていた？」と聞かれたときだけ true。
+   * ふだんは false ＝ 現在有効な内容だけを見る（昔と今を混ぜないため）。
+   */
+  includePast = false,
 ): Promise<Memory[]> {
   const { data, error } = await supabase
     .from("confirmed_memories")
@@ -107,7 +117,31 @@ export async function fetchCandidateMemories(
     text: r.text as string,
     conversationId: r.conversation_id as string,
     confirmedAt: (r.confirmed_at as string) ?? null,
+    isPast: false,
   }));
+
+  /* 昔を聞かれたときだけ、過去の考えも足す（Phase 3C）。
+     訂正された旧版（superseded）は past_memories に入っていないので、
+     「間違いだった内容」が昔の考えとして持ち出されることはない。 */
+  if (includePast) {
+    const { data: past, error: pastError } = await supabase
+      .from("past_memories")
+      .select("id, text, conversation_id, confirmed_at")
+      .eq("user_id", userId)
+      .order("revised_at", { ascending: false })
+      .limit(SEARCH.pastFetchLimit);
+
+    if (pastError) console.error("[記憶検索] 過去の考えの読み込みに失敗:", pastError);
+    for (const r of past ?? []) {
+      all.push({
+        id: r.id as string,
+        text: r.text as string,
+        conversationId: r.conversation_id as string,
+        confirmedAt: (r.confirmed_at as string) ?? null,
+        isPast: true,
+      });
+    }
+  }
 
   // 文字の重なりが強い順 → 新しい順（安定した並びにする）
   const scored = all
@@ -170,7 +204,59 @@ export async function fetchUsedMemoriesInConversation(
     text: r.text as string,
     conversationId: r.conversation_id as string,
     confirmedAt: (r.confirmed_at as string) ?? null,
+    isPast: false,
   }));
+}
+
+/**
+ * 回答へ渡す直前に、その記憶がいまも使える状態かを確かめ直す（Phase 3C）。
+ *
+ * 【なぜ必要か】
+ * 検索してから回答を作るまでの間に、別の画面で削除・訂正が行われることがある。
+ * 古い検索結果をそのまま渡すと、**消したはずの内容がAIの回答に出てしまう**。
+ * 呼び出しの直前に引き直し、いま使える記憶だけに絞る。
+ *
+ * 過去の考え（isPast）は confirmed には入っていないので、別に確かめる。
+ */
+export async function keepStillUsable(
+  supabase: SupabaseClient,
+  userId: string,
+  memories: Memory[],
+): Promise<Memory[]> {
+  if (memories.length === 0) return [];
+
+  const currentIds = memories.filter((m) => !m.isPast).map((m) => m.id);
+  const pastIds = memories.filter((m) => m.isPast).map((m) => m.id);
+  const alive = new Set<string>();
+
+  if (currentIds.length > 0) {
+    const { data, error } = await supabase
+      .from("confirmed_memories")
+      .select("id")
+      .eq("user_id", userId)
+      .in("id", currentIds);
+    // 確かめられなかったときは安全側に倒し、記憶を渡さない
+    if (error) {
+      console.error("[記憶検索] 渡す直前の確認に失敗（記憶なしで続行）:", error);
+      return [];
+    }
+    for (const r of data ?? []) alive.add(r.id as string);
+  }
+
+  if (pastIds.length > 0) {
+    const { data, error } = await supabase
+      .from("past_memories")
+      .select("id")
+      .eq("user_id", userId)
+      .in("id", pastIds);
+    if (error) {
+      console.error("[記憶検索] 渡す直前の確認に失敗（記憶なしで続行）:", error);
+      return [];
+    }
+    for (const r of data ?? []) alive.add(r.id as string);
+  }
+
+  return memories.filter((m) => alive.has(m.id));
 }
 
 /**
@@ -183,8 +269,10 @@ export async function searchMemories(
   supabase: SupabaseClient,
   userId: string,
   question: string,
+  /** 「昔はどう考えていた？」と聞かれたときだけ true（Phase 3C） */
+  includePast = false,
 ): Promise<SearchOutcome> {
-  const candidates = await fetchCandidateMemories(supabase, userId, question);
+  const candidates = await fetchCandidateMemories(supabase, userId, question, includePast);
   if (candidates.length === 0) return { selected: [], examined: 0, call: null };
 
   const client = getClient();
@@ -197,7 +285,10 @@ export async function searchMemories(
   }
 
   const startedAt = Date.now();
-  const list = candidates.map((m, i) => `${i + 1}. ${m.text}`).join("\n");
+  // 過去の考えには印を付ける。昔を聞かれたときだけ選んでもらうため（Phase 3C）
+  const list = candidates
+    .map((m, i) => `${i + 1}. ${m.text}${m.isPast ? "（これは、考えが変わる前の古い考えです）" : ""}`)
+    .join("\n");
 
   try {
     const response = await client.messages.create({

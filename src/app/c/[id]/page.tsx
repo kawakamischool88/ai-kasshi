@@ -1,4 +1,5 @@
 import { notFound, redirect } from "next/navigation";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
 import { getBudgetStatus } from "@/lib/ai/budget";
 import { AI } from "@/config/ai";
@@ -6,8 +7,14 @@ import { expireOldCandidates } from "@/app/actions";
 import { Header } from "@/app/Header";
 import { Chat } from "./Chat";
 import type { Candidate } from "./MemoryCard";
-import type { SourceMemory } from "./MemorySource";
+import type { SourceMemory, SourceState } from "./MemorySource";
+import type { RevisionProposal } from "./RevisionCard";
+import { DeleteConversation } from "./DeleteConversation";
 import { formatDateTimeJst } from "@/lib/time";
+
+/** 出典や提案を表示するために読む列 */
+const MEMORY_COLUMNS =
+  "id, suggested_text, confirmed_text, status, superseded_by, conversation_id, confirmed_at";
 
 /** 1つの会話の画面。開き直したときは、これまでのやりとりがそのまま出る */
 export default async function ConversationPage({
@@ -66,61 +73,24 @@ export default async function ConversationPage({
         .order("candidate_index", { ascending: true })
     : { data: [] };
 
-  const candidates: Candidate[] = (pending ?? []).map((c) => ({
-    id: c.id as string,
-    text: c.suggested_text as string,
-    requested: Boolean(c.requested_by_user),
-  }));
+  const candidates: Candidate[] = (pending ?? [])
+    .filter((c) => c.suggested_text)
+    .map((c) => ({
+      id: c.id as string,
+      text: c.suggested_text as string,
+      requested: Boolean(c.requested_by_user),
+    }));
 
-  /* 出典（Phase 3B）。
-     AIが実際に使った確定記憶だけが memory_references に入っている。
-     RLS により、取れるのは本人のぶんだけ。 */
-  const assistantIds = list.filter((m) => m.role === "assistant").map((m) => m.id);
-  const sources: Record<string, SourceMemory[]> = {};
-
-  if (assistantIds.length > 0) {
-    const { data: refs } = await supabase
-      .from("memory_references")
-      .select("message_id, memory_id")
-      .in("message_id", assistantIds);
-
-    const memoryIds = [...new Set((refs ?? []).map((r) => r.memory_id as string))];
-    if (memoryIds.length > 0) {
-      // 確定済みだけを見せる view から引く（未確定・却下・期限切れは出てこない）
-      const { data: mems } = await supabase
-        .from("confirmed_memories")
-        .select("id, text, conversation_id, confirmed_at")
-        .in("id", memoryIds);
-
-      // 元になった会話の見出し
-      const convIds = [...new Set((mems ?? []).map((m) => m.conversation_id as string))];
-      const { data: convs } = convIds.length
-        ? await supabase.from("conversations").select("id, title").in("id", convIds)
-        : { data: [] };
-      const titleOf = new Map((convs ?? []).map((c) => [c.id as string, (c.title as string) ?? ""]));
-
-      const byId = new Map(
-        (mems ?? []).map((m) => [
-          m.id as string,
-          {
-            id: m.id as string,
-            text: m.text as string,
-            confirmedAt: m.confirmed_at ? formatDateTimeJst(m.confirmed_at as string) : "",
-            conversationId: m.conversation_id as string,
-            conversationTitle: titleOf.get(m.conversation_id as string) ?? "",
-            isSameConversation: (m.conversation_id as string) === id,
-          } satisfies SourceMemory,
-        ]),
-      );
-
-      for (const r of refs ?? []) {
-        const mem = byId.get(r.memory_id as string);
-        if (!mem) continue; // 確定でなくなった記憶は出典に出さない
-        const key = r.message_id as string;
-        sources[key] = [...(sources[key] ?? []), mem];
-      }
-    }
-  }
+  const [sources, proposals, { count: memoryCount }] = await Promise.all([
+    loadSources(supabase, list, id),
+    loadRevisionProposals(supabase, lastUserMessageId),
+    // この会話から作られた記憶の件数（会話ごと消すときに範囲を示すため）
+    supabase
+      .from("memory_candidates")
+      .select("id", { count: "exact", head: true })
+      .eq("conversation_id", id)
+      .in("status", ["pending", "confirmed", "archived"]),
+  ]);
 
   return (
     <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col px-5 py-8">
@@ -133,7 +103,201 @@ export default async function ConversationPage({
         maxInputChars={AI.maxInputChars}
         candidates={candidates}
         sources={sources}
+        proposals={proposals}
+      />
+      <DeleteConversation
+        conversationId={conversation.id}
+        memoryCount={memoryCount ?? 0}
+        messageCount={list.length}
       />
     </main>
   );
+}
+
+/** 記憶の状態を、画面で使う言い方に直す */
+function toSourceState(status: string): SourceState | null {
+  if (status === "confirmed") return "current";
+  if (status === "superseded") return "corrected";
+  if (status === "archived") return "past";
+  if (status === "deleted") return "deleted";
+  return null; // 未確定・却下・期限切れは出典に出さない
+}
+
+type MemoryRow = {
+  id: string;
+  text: string | null;
+  status: string;
+  supersededBy: string | null;
+  conversationId: string;
+  confirmedAt: string | null;
+};
+
+function toMemoryRow(r: Record<string, unknown>): MemoryRow {
+  return {
+    id: r.id as string,
+    text: ((r.confirmed_text as string) ?? (r.suggested_text as string) ?? null) as string | null,
+    status: r.status as string,
+    supersededBy: ((r.superseded_by as string) ?? null) as string | null,
+    conversationId: r.conversation_id as string,
+    confirmedAt: ((r.confirmed_at as string) ?? null) as string | null,
+  };
+}
+
+/**
+ * 出典（Phase 3B / 3C）。
+ *
+ * AIが実際に使った確定記憶だけが memory_references に入っている。
+ * RLS により、取れるのは本人のぶんだけ。
+ *
+ * 【ここだけ memory_candidates を直接読む理由】
+ * 検索・AI回答への注入は、必ず確定済みだけの view を使う決まり（Phase 3B）。
+ * ただし出典の表示では「そのあと訂正された・消された」ことも伝えたいので、
+ * 状態を知る必要がある。**表示のためだけの読み取りで、AIには渡さない。**
+ */
+async function loadSources(
+  supabase: SupabaseClient,
+  list: { id: string; role: string }[],
+  conversationId: string,
+): Promise<Record<string, SourceMemory[]>> {
+  const assistantIds = list.filter((m) => m.role === "assistant").map((m) => m.id);
+  const sources: Record<string, SourceMemory[]> = {};
+  if (assistantIds.length === 0) return sources;
+
+  const { data: refs } = await supabase
+    .from("memory_references")
+    .select("message_id, memory_id")
+    .in("message_id", assistantIds);
+
+  const memoryIds = [...new Set((refs ?? []).map((r) => r.memory_id as string))];
+  if (memoryIds.length === 0) return sources;
+
+  const rows = new Map<string, MemoryRow>();
+  const { data: first } = await supabase
+    .from("memory_candidates")
+    .select(MEMORY_COLUMNS)
+    .in("id", memoryIds);
+  for (const r of first ?? []) rows.set(r.id as string, toMemoryRow(r));
+
+  /* 訂正・考えの変化のあとの「いまの内容」をたどる。
+     何度も直されていることがあるので、数回だけ先へたどる。 */
+  for (let hop = 0; hop < 3; hop++) {
+    const next = [...rows.values()]
+      .map((r) => r.supersededBy)
+      .filter((v): v is string => v !== null && !rows.has(v));
+    if (next.length === 0) break;
+    const { data } = await supabase.from("memory_candidates").select(MEMORY_COLUMNS).in("id", next);
+    for (const r of data ?? []) rows.set(r.id as string, toMemoryRow(r));
+  }
+
+  // 元になった会話の見出し
+  const convIds = [...new Set([...rows.values()].map((r) => r.conversationId))];
+  const { data: convs } = convIds.length
+    ? await supabase.from("conversations").select("id, title").in("id", convIds)
+    : { data: [] };
+  const titleOf = new Map((convs ?? []).map((c) => [c.id as string, (c.title as string) ?? ""]));
+
+  /** 訂正・変化の先をたどって、いま有効な内容を探す */
+  const currentTextOf = (row: MemoryRow): string => {
+    let cursor = row.supersededBy;
+    for (let hop = 0; hop < 4 && cursor; hop++) {
+      const next = rows.get(cursor);
+      if (!next) return "";
+      if (next.status === "confirmed") return next.text ?? "";
+      if (next.status === "deleted") return "";
+      cursor = next.supersededBy;
+    }
+    return "";
+  };
+
+  for (const r of refs ?? []) {
+    const row = rows.get(r.memory_id as string);
+    if (!row) continue;
+    const state = toSourceState(row.status);
+    if (!state) continue;
+
+    const memory: SourceMemory = {
+      id: row.id,
+      text: state === "deleted" ? "" : (row.text ?? ""),
+      confirmedAt:
+        state === "deleted" || !row.confirmedAt ? "" : formatDateTimeJst(row.confirmedAt),
+      state,
+      currentText: state === "corrected" || state === "past" ? currentTextOf(row) : "",
+      conversationId: row.conversationId,
+      conversationTitle: titleOf.get(row.conversationId) ?? "",
+      isSameConversation: row.conversationId === conversationId,
+    };
+
+    const key = r.message_id as string;
+    sources[key] = [...(sources[key] ?? []), memory];
+  }
+
+  return sources;
+}
+
+/**
+ * 記憶の訂正・変化・削除の提案（Phase 3C）。
+ *
+ * 出すのは「いちばん新しい本人の発言から作られた提案」だけ。
+ * ［そのままにする］にしたものと、済んだものは出てこない。
+ *
+ * **ここに出ている間は、記憶はまだ何も変わっていない。**
+ */
+async function loadRevisionProposals(
+  supabase: SupabaseClient,
+  lastUserMessageId: string | undefined,
+): Promise<RevisionProposal[]> {
+  if (!lastUserMessageId) return [];
+
+  const { data: requests } = await supabase
+    .from("memory_revision_requests")
+    .select("id, intent, target_memory_id, proposed_text")
+    .eq("source_message_id", lastUserMessageId)
+    .eq("status", "pending")
+    .order("request_index", { ascending: true });
+
+  if (!requests || requests.length === 0) return [];
+
+  const targetIds = requests.map((r) => r.target_memory_id as string);
+  const { data: targets } = await supabase
+    .from("memory_candidates")
+    .select("id, suggested_text, confirmed_text, status")
+    .in("id", targetIds);
+
+  const targetOf = new Map(
+    (targets ?? []).map((t) => [
+      t.id as string,
+      {
+        text: ((t.confirmed_text as string) ?? (t.suggested_text as string) ?? "") as string,
+        status: t.status as string,
+      },
+    ]),
+  );
+
+  const out: RevisionProposal[] = [];
+  for (const r of requests) {
+    const target = targetOf.get(r.target_memory_id as string);
+    // すでに直された・消された記憶の提案は、もう出さない
+    if (!target) continue;
+    if (target.status !== "confirmed" && target.status !== "archived") continue;
+
+    /* 消したときに一緒に消える版の数。本人に削除の範囲を示すため。
+       たどるのはDB側（自分の記憶だけ）。 */
+    let versionCount = 1;
+    if (r.intent === "delete") {
+      const { data: chain } = await supabase.rpc("memory_chain", {
+        target: r.target_memory_id as string,
+      });
+      if (Array.isArray(chain) && chain.length > 0) versionCount = chain.length;
+    }
+
+    out.push({
+      id: r.id as string,
+      intent: r.intent as RevisionProposal["intent"],
+      currentText: target.text,
+      proposedText: (r.proposed_text as string) ?? "",
+      isPast: target.status === "archived",
+      versionCount,
+    });
+  }
+  return out;
 }
