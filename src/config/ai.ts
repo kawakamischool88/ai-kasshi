@@ -45,6 +45,30 @@ export const AI = {
 } as const;
 
 /**
+ * 記憶候補の抽出（Phase 3A）。
+ *
+ * 会話の返事とは別の呼び出しにしてある。
+ * **将来、抽出だけ安いモデルへ変えたいときは、ここの model を書き換えるだけでよい。**
+ * 利用量は operation_type = "memory_extract" として別に記録される。
+ */
+export const MEMORY = {
+  /** 抽出に使うモデル。会話と分けてあるので、ここだけ安いモデルにできる */
+  model: "claude-sonnet-5",
+  effort: "medium" as const,
+  /** 候補は短い文なので、返事より小さくてよい */
+  maxTokens: 1000,
+
+  /** 抽出のときにAIへ見せる直近のやりとりの数（指示語を解くのに必要な最小限） */
+  contextMessageCount: 6,
+
+  /** 1回の会話から作る候補の上限。多く出しすぎないことを優先する */
+  maxCandidates: 2,
+
+  /** 候補が期限切れになるまでの日数 */
+  expireDays: 30,
+} as const;
+
+/**
  * 公式API単価（USD / 100万トークン）。
  * 2026-09-17 に https://platform.claude.com/docs/en/about-claude/pricing で確認。
  *

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useTransition } from "react";
 import { retryLastReply, sendMessage } from "@/app/actions";
+import { MemoryCard, type Candidate } from "./MemoryCard";
 
 type Msg = { id: string; role: "user" | "assistant"; content: string };
 
@@ -19,6 +20,7 @@ export function Chat({
   needsRetry,
   budgetStopped,
   maxInputChars,
+  candidates,
 }: {
   conversationId: string;
   messages: Msg[];
@@ -26,6 +28,8 @@ export function Chat({
   budgetStopped: boolean;
   /** サーバー側の設定（src/config/ai.ts）を受け取る。設定そのものは画面に持ち込まない */
   maxInputChars: number;
+  /** 本人確認待ちの記憶候補。ないときは空。空なら記憶の画面は出さない */
+  candidates: Candidate[];
 }) {
   const [draft, setDraft] = useState("");
   const [pendingText, setPendingText] = useState<string | null>(null);
@@ -104,6 +108,11 @@ export function Chat({
 
           {isPending && <Bubble role="assistant" content="考えています…" muted />}
         </ul>
+
+        {/* 記憶候補。候補がないときは何も出さない */}
+        {!isPending &&
+          candidates.map((c) => <MemoryCard key={c.id} candidate={c} />)}
+
         <div ref={bottomRef} />
       </div>
 
