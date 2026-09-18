@@ -32,15 +32,26 @@ export function judgeBudget(spentUsd: number, warningUsd: number, stopUsd: numbe
 /**
  * 今月の推定原価を合計して状態を返す。
  *
- * RLS により、取得できるのはログイン中の本人の記録だけ。
+ * 【user_id を必ず渡す理由】
+ * 管理者は RLS で全員ぶんの ai_usage を読めるようになった。
+ * そのままだと、管理者のときだけ「全員の合計」で止まる判定に変わってしまう。
+ * 誰であっても同じ動きにするため、ここでは**本人のぶんに絞る**。
+ *
+ * 渡す userId は、呼ぶ側が supabase.auth.getUser() で得たものだけ。
+ * 画面から送られてきた値を渡してはいけない。
+ *
  * 1か月ぶんの件数は多くないので、取り出して足し合わせる。
  */
-export async function getBudgetStatus(supabase: SupabaseClient): Promise<BudgetStatus> {
+export async function getBudgetStatus(
+  supabase: SupabaseClient,
+  userId: string,
+): Promise<BudgetStatus> {
   const since = monthStartJst().toISOString();
 
   const { data, error } = await supabase
     .from("ai_usage")
     .select("estimated_cost")
+    .eq("user_id", userId)
     .gte("created_at", since);
 
   if (error) {

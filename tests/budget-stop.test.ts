@@ -31,7 +31,7 @@ async function budgetWith(stopUsd: number, warningUsd = 0) {
   process.env.AI_MONTHLY_STOP_USD = String(stopUsd);
   process.env.AI_MONTHLY_WARNING_USD = String(warningUsd);
   const mod = await import("@/lib/ai/budget");
-  return mod.getBudgetStatus(a);
+  return mod.getBudgetStatus(a, idA);
 }
 
 async function addUsage(operationType: string, cost: number) {

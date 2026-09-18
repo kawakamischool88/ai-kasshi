@@ -1,13 +1,22 @@
-import { redirect } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { getBudgetStatus } from "@/lib/ai/budget";
+import { BUDGET } from "@/config/ai";
+import { judgeBudget } from "@/lib/ai/budget";
+import { isAdmin } from "@/lib/auth/admin";
 import { formatCost } from "@/lib/ai/cost";
 import { dateKeyJst, formatDateJst, monthStartJst } from "@/lib/time";
 import { Header } from "@/app/Header";
 
 /**
- * 開発確認用の利用状況。
- * 柏村さんが使い始める前に、見えないようにするか管理者だけに限ること。
+ * AIの利用状況と推定原価。**運営（管理者）だけが見る画面**。
+ *
+ * 【守り方】
+ *   ① 未ログイン       … ログイン画面へ
+ *   ② 管理者ではない人 … 404（「ここに何かある」ことも見せない）
+ *   ③ データそのもの   … DB側の RLS で、管理者以外は他人の記録を引けない
+ *
+ * ②だけだと画面を消しただけになる。③があるので、
+ * この画面を通らずに直接データを取りに行っても原価は出てこない。
  */
 export default async function CostPage() {
   const supabase = await createClient();
@@ -16,22 +25,36 @@ export default async function CostPage() {
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
+  /* 管理者でなければ、この画面は「無い」ことにする。
+     ログイン画面へ送ったり「権限がありません」と出したりすると、
+     そこに運営用の画面があること自体を教えてしまう。 */
+  if (!(await isAdmin(supabase))) notFound();
+
   const since = monthStartJst();
-  const [{ data: rows }, budget] = await Promise.all([
-    supabase
-      .from("ai_usage")
-      .select(
-        "created_at, model, status, error_code, operation_type, input_tokens, output_tokens, thinking_tokens, estimated_cost, duration_ms, pricing_version",
-      )
-      .gte("created_at", since.toISOString())
-      .order("created_at", { ascending: false }),
-    getBudgetStatus(supabase),
-  ]);
+  /* 管理者なので、RLS により**全員ぶん**が返る。
+     原価は運営全体で見るものなので、ここは本人のぶんに絞らない。 */
+  const { data: rows } = await supabase
+    .from("ai_usage")
+    .select(
+      "created_at, model, status, error_code, operation_type, input_tokens, output_tokens, thinking_tokens, estimated_cost, duration_ms, pricing_version",
+    )
+    .gte("created_at", since.toISOString())
+    .order("created_at", { ascending: false });
 
   const all = rows ?? [];
   const success = all.filter((r) => r.status === "success");
   const failed = all.filter((r) => r.status === "error");
   const blocked = all.filter((r) => r.status === "blocked");
+
+  /* しきい値の判定は、いま引いた行（＝全員ぶん）の合計で行う。
+     getBudgetStatus は「本人のぶん」を見る関数なので、ここでは使わない。 */
+  const spentUsd = success.reduce((sum, r) => sum + Number(r.estimated_cost ?? 0), 0);
+  const budget = {
+    spentUsd,
+    warningUsd: BUDGET.monthlyWarningUsd,
+    stopUsd: BUDGET.monthlyStopUsd,
+    state: judgeBudget(spentUsd, BUDGET.monthlyWarningUsd, BUDGET.monthlyStopUsd),
+  };
 
   const inputTokens = success.reduce((s, r) => s + Number(r.input_tokens ?? 0), 0);
   const outputTokens = success.reduce((s, r) => s + Number(r.output_tokens ?? 0), 0);
@@ -69,9 +92,11 @@ export default async function CostPage() {
     <main className="mx-auto w-full max-w-2xl flex-1 px-5 py-8">
       <Header backHref="/" />
 
-      <h2 className="mt-8 text-xl font-bold">利用状況（開発確認用）</h2>
+      <h2 className="mt-8 text-xl font-bold">利用状況（運営用）</h2>
       <p className="m-0 mt-1 text-sm text-neutral-600">
         {formatDateJst(since)} 以降（日本時間の今月）／金額は推定です
+        <br />
+        利用者全員ぶんの合計です。会話の中身はここには出ません。
       </p>
 
       <dl className="mt-6 grid grid-cols-2 gap-x-6 gap-y-4">
@@ -161,7 +186,7 @@ export default async function CostPage() {
   );
 }
 
-/** 呼び出しの種類の言い換え（この画面は開発確認用だが、読みやすくしておく） */
+/** 呼び出しの種類の言い換え */
 const OPERATION_LABEL: Record<string, string> = {
   chat: "会話の返事",
   memory_search: "記憶の検索",

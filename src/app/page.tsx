@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getBudgetStatus } from "@/lib/ai/budget";
 import { hasApiKey } from "@/lib/ai/anthropic";
+import { isAdmin } from "@/lib/auth/admin";
 import { formatDateTimeJst } from "@/lib/time";
 import { createConversation, expireOldCandidates } from "./actions";
 import { Header } from "./Header";
@@ -18,14 +19,19 @@ export default async function Home() {
   // 確認待ちの件数を数える前に、期限切れの印を付ける
   await expireOldCandidates(supabase);
 
-  const [{ data: conversations }, budget, { count: pendingCount }, { count: memoryCount }] =
-    await Promise.all([
+  const [
+    { data: conversations },
+    budget,
+    { count: pendingCount },
+    { count: memoryCount },
+    admin,
+  ] = await Promise.all([
     supabase
       .from("conversations")
       .select("id, title, last_message_at")
       .order("last_message_at", { ascending: false })
       .limit(100),
-    getBudgetStatus(supabase),
+    getBudgetStatus(supabase, user.id),
     supabase
       .from("memory_candidates")
       .select("id", { count: "exact", head: true })
@@ -33,6 +39,8 @@ export default async function Home() {
       .gt("expires_at", new Date().toISOString()),
     // 残してある内容の件数（Phase 3C）
     supabase.from("confirmed_memories").select("id", { count: "exact", head: true }),
+    // 運営用の入口を出すかどうか（サーバー側で判定する）
+    isAdmin(supabase),
   ]);
 
   const list = conversations ?? [];
@@ -125,12 +133,17 @@ export default async function Home() {
         )}
       </section>
 
-      {/* 開発確認用。柏村さんが使い始める前に、見えないようにするか管理者だけに限る */}
-      <footer className="mt-16 border-t border-line pt-5 text-sm text-neutral-600">
-        <Link href="/cost" className="underline underline-offset-4">
-          利用状況（開発確認用）
-        </Link>
-      </footer>
+      {/* 運営（管理者）だけに出す入口。
+          通常の利用者には、この行そのものが出ない。
+          なお、入口を消すのは「見えない」だけで守りにはならない。
+          本当の守りは /cost 側の権限確認と、DB の RLS にある。 */}
+      {admin && (
+        <footer className="mt-16 border-t border-line pt-5 text-sm text-neutral-600">
+          <Link href="/cost" className="underline underline-offset-4">
+            利用状況（運営用）
+          </Link>
+        </footer>
+      )}
     </main>
   );
 }

@@ -11,6 +11,7 @@
     "test": "vitest run",
     "seed": "tsx scripts/seed-test-users.ts",
     "invite": "tsx scripts/invite.ts",
+    "admin": "tsx scripts/grant-admin.ts",
     "db:push": "supabase db push",
     "db:diff": "supabase db diff",
     "config:push": "supabase config push",

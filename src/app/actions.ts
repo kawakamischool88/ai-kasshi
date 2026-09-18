@@ -165,7 +165,7 @@ async function blockedByBudget(
     return true;
   }
 
-  const budget = await getBudgetStatus(supabase);
+  const budget = await getBudgetStatus(supabase, userId);
   if (budget.state !== "stopped") return false;
 
   await recordUsage(supabase, {

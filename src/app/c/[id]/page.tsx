@@ -43,7 +43,7 @@ export default async function ConversationPage({
       .select("id, role, content, created_at")
       .eq("conversation_id", id)
       .order("created_at", { ascending: true }),
-    getBudgetStatus(supabase),
+    getBudgetStatus(supabase, user.id),
   ]);
 
   const list = (messages ?? []).map((m) => ({
