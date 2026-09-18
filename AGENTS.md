@@ -68,6 +68,97 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 4. **その後に**古い鍵を無効化する
 5. 無効化された鍵で API を呼び、拒否されること（HTTP 401）を確かめる
 
+## 開発用と本番用を取り違えない（2026-09-18 確定）
+
+Supabase のプロジェクトは2つある。
+
+| | プロジェクト | 場所 | 中身 |
+| --- | --- | --- | --- |
+| 開発用 | `ai-kasshi-dev` | ap-northeast-2（ソウル） | 架空ユーザーだけ。壊してよい |
+| 本番用 | `ai-kasshi-prod` | ap-northeast-1（東京） | **柏村さんの本物のデータが入る。壊してはいけない** |
+
+### `.env.test.local` は**開発用（dev）専用**
+
+このファイルには Supabase の **Secret 鍵**が入っている。
+入れてよいのは `ai-kasshi-dev` の鍵だけで、**本番用の鍵は絶対に書かない**。
+
+理由は2つ。
+
+1. このファイルを読むのは、`npm test` ・ `npm run reset:test` ・ `npm run seed` ・
+   `npm run dev:otp` ・ `npm run invite` といった、**データを消したり作ったりする命令**。
+   本番を向いていたら、テストを1回流しただけで本物のデータが消える。
+2. Secret 鍵は RLS（他人のデータを読めない決まり）を素通りする。
+   本番の鍵を手元のファイルに置くこと自体が危ない。
+
+本番のDBを触る必要があるとき（控えを取る等）は、このファイルではなく
+**CLI のリンク**（`npx supabase link`）を切り替えて行う。
+
+### 「どこを向いているか」の決まり方は2種類ある
+
+| 決まり方 | 使う命令 |
+| --- | --- |
+| **CLI のリンク**（`supabase link`） | `db:push` / `config:push` / `backup` / `ledger` / `restore` / `restore:ledger` / `restore:verify` / `export:check` |
+| **`.env.test.local`** | `npm test` / `reset:test` / `seed` / `dev:otp` / `invite` |
+| **`.env.local`** | `npm run dev`（手元で開くアプリ） |
+
+この3つがバラバラを向くことがあり得る。
+**作業を始める前に、必ず `npm run where` で確かめる。**
+鍵の値は表示されず、プロジェクトの名前と場所だけが出る。
+
+### 本番を向いていたら止まる命令
+
+`scripts/lib/target.ts` の `stopIfNotDev()` を、**壊す側の命令の先頭**に入れてある。
+
+| 命令 | 止まる？ | 見るもの |
+| --- | --- | --- |
+| `npm run reset:test` | ○ 止まる | `.env.test.local` |
+| `npm run seed` | ○ 止まる | `.env.test.local` |
+| `npm run restore` | ○ 止まる | CLI のリンク |
+| `npm run restore:ledger` | ○ 止まる | CLI のリンク |
+| `npm run export:check` | ○ 止まる | CLI のリンク |
+| `npm run backup` | **× 止めない** | — |
+| `npm run ledger` | **× 止めない** | — |
+| `npm run restore:verify` | × 止めない | — |
+
+**`backup` と `ledger` は本番でこそ必要**なので、止めてはいけない。
+どちらも読み取るだけで、DBを書き換えない。
+
+### 分からないときは「本番」として扱う
+
+`stopIfNotDev()` は、向き先が**分からない**ときも止める。
+「知らないプロジェクトだから、たぶん開発用だろう」とは考えない。
+止まって確認してもらうほうが、取り違えて本番を壊すより安い。
+
+Supabase を作り直したら、`scripts/lib/target.ts` の `KNOWN` に番号を足すこと。
+ここに並ぶのは**プロジェクトの番号（ref）だけ**で、鍵ではない
+（アプリの公開URL `NEXT_PUBLIC_SUPABASE_URL` にそのまま入っていて、ブラウザからも見える）。
+**鍵は絶対にここへ書かない。**
+
+### `npm run config:push`（本番）の注意（2026-09-18 方針確定）
+
+**`config push` は Auth だけでなく、DB接続プール・Storage も一緒に押し込む。**
+
+`supabase init` が最初に置いていった既定値が「宣言済み」と扱われるため、
+`config.toml` に書いていない項目まで本番へ反映されてしまう。実際に差分に出たもの：
+
+| 項目 | 本番のいま | 押し込まれる値 |
+| --- | --- | --- |
+| `db.pooler.max_client_conn` | 200 | 100（**上限が半分になる**） |
+| `db.pooler.default_pool_size` | 15 | 20 |
+| `storage.analytics.enabled` | true | false |
+
+**決めた手順：**
+
+1. まず `npx supabase config diff` を読む（**必ず先に**）
+2. `npx supabase config push` を**対話で**実行する
+3. **`auth` だけ「はい」。`db` と `storage` は「いいえ」**
+4. 実行後、**もう一度 `npx supabase config diff`** を流して、狙った項目だけが消えたことを確かめる
+
+**本番側の値を `config.toml` に写して差分を消す方法は採らない**（2026-09-18 判断）。
+Supabase 側の既定値が変わったときに追随が必要になり、かえって食い違いの元になるため。
+
+**`--yes` を付けない／非対話で流さない。** 確認を飛ばすと上の3項目が黙って本番へ入る。
+
 ## 技術スタック
 
 - Next.js 16（App Router、`src/` 配下、`proxy.ts` が旧 middleware）
@@ -97,6 +188,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 | やること | コマンド |
 | --- | --- |
+| **いまどこを向いているか確かめる** | **`npm run where`** |
 | 開発サーバー | `npm run dev` |
 | DB 変更を開発用 Supabase へ反映 | `npm run db:push` |
 | Supabase の設定（招待制・メール文面）を反映 | `npm run config:push` |

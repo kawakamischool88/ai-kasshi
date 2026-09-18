@@ -24,6 +24,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { BACKUP_TABLES, RESTORE_SCHEMA } from "../src/config/backup";
 import { runSql, ident } from "./lib/db";
+import { stopIfNotDev } from "./lib/target";
 
 loadEnv({ path: ".env.test.local", override: true });
 
@@ -31,6 +32,11 @@ loadEnv({ path: ".env.test.local", override: true });
 const CHUNK = 200;
 
 function main() {
+  /* 開発用（ai-kasshi-dev）を向いていなければ、その場で止める。
+     この命令は restore スキーマを作り直す（＝いったん消す）ので、
+     本番のDBに対して走らせてはいけない。 */
+  stopIfNotDev("cli", "npm run restore");
+
   const dir = process.argv[2];
   if (!dir) {
     console.error("使い方： npm run restore -- backups/<フォルダ名>");

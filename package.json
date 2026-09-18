@@ -14,6 +14,7 @@
     "db:push": "supabase db push",
     "db:diff": "supabase db diff",
     "config:push": "supabase config push",
+    "where": "tsx scripts/where.ts",
     "dev:otp": "tsx scripts/dev-otp.ts",
     "reset:test": "tsx scripts/reset-test-data.ts",
     "backup": "tsx scripts/backup.ts",

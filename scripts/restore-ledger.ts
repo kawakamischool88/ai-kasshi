@@ -21,6 +21,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { LEDGERS, RESTORE_SCHEMA as S } from "../src/config/backup";
 import { runSql, lit } from "./lib/db";
+import { stopIfNotDev } from "./lib/target";
 
 loadEnv({ path: ".env.test.local", override: true });
 
@@ -62,6 +63,10 @@ function excludeContextSql(memoryId: string, reason: string): string {
 }
 
 function main() {
+  /* 開発用（ai-kasshi-dev）を向いていなければ、その場で止める。
+     この命令は restore スキーマの中身を書き換えるので、本番のDBに対して走らせてはいけない。 */
+  stopIfNotDev("cli", "npm run restore:ledger");
+
   const revisions = readLedger(LEDGERS.revisions.file);
   const deletions = readLedger(LEDGERS.deletions.file);
 

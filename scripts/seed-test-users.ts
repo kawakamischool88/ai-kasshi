@@ -11,8 +11,13 @@
 import "dotenv/config";
 import { config as loadEnv } from "dotenv";
 import { createClient } from "@supabase/supabase-js";
+import { stopIfNotDev } from "./lib/target";
 
 loadEnv({ path: ".env.test.local", override: true });
+
+/* 開発用（ai-kasshi-dev）を向いていなければ、その場で止める。
+   架空ユーザーを本番へ作ってしまうと、あとから取り除くのが面倒になる。 */
+stopIfNotDev("test", "npm run seed");
 
 const url = process.env.SUPABASE_URL;
 const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;

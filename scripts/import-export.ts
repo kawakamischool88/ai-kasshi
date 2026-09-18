@@ -20,6 +20,7 @@ import { readFileSync, existsSync } from "node:fs";
 import JSZip from "jszip";
 import { EXPORT_FILES, EXPORT_FORMAT_VERSION, REQUIRED_FILES } from "../src/config/export";
 import { runSql, lit } from "./lib/db";
+import { stopIfNotDev } from "./lib/target";
 
 loadEnv({ path: ".env.test.local", override: true });
 
@@ -32,6 +33,10 @@ const checks: Check[] = [];
 const check = (name: string, ok: boolean, detail?: string) => checks.push({ name, ok, detail });
 
 async function main() {
+  /* 開発用（ai-kasshi-dev）を向いていなければ、その場で止める。
+     この命令は export_check スキーマを作り直す（＝いったん消す）ので、本番のDBに対して走らせてはいけない。 */
+  stopIfNotDev("cli", "npm run export:check");
+
   const file = process.argv[2];
   if (!file || !existsSync(file)) {
     console.error("使い方： npm run export:check -- <書き出したZIPの場所>");

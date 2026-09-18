@@ -14,8 +14,14 @@
 import "dotenv/config";
 import { config as loadEnv } from "dotenv";
 import { createClient } from "@supabase/supabase-js";
+import { stopIfNotDev } from "./lib/target";
 
 loadEnv({ path: ".env.test.local", override: true });
+
+/* 開発用（ai-kasshi-dev）を向いていなければ、その場で止める。
+   分からないときも止める（安全側）。
+   この命令は架空ユーザーのデータを消すので、本番で走らせてはいけない。 */
+stopIfNotDev("test", "npm run reset:test");
 
 const url = process.env.SUPABASE_URL;
 const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
