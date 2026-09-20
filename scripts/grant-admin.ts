@@ -77,21 +77,80 @@ function main(): void {
     process.exit(1);
   }
 
-  // その人がログインできる人として登録されているか、先に確かめる
-  const [found] = runSql<{ id: string }>(
-    `select id::text as id from auth.users where email = ${lit(email)};`,
+  /* その人がログインできる人として登録されているか、先に確かめる。
+
+     【小文字にそろえて突き合わせる理由】
+     Supabase はメールアドレスを小文字で保存する。
+     打ち込んだほうに大文字が1文字でも混ざっていると、
+     完全一致では見つからず「登録されていません」と誤って出る。 */
+  const [found] = runSql<{ id: string; mail: string }>(
+    `select id::text as id, email as mail
+       from auth.users
+      where lower(email) = lower(${lit(email)});`,
   );
   if (!found) {
-    console.error(`  中止：${email} は、まだログインできる人として登録されていません。`);
-    console.error("  先に  npm run invite -- メールアドレス  を行ってください。");
+    console.error(`  中止：${email} は、この Supabase にまだ登録されていません。`);
+    console.error("");
+    if (target.kind === "dev") {
+      console.error("  開発用なら  npm run invite -- メールアドレス  で登録できます。");
+    } else {
+      /* npm run invite は .env.test.local（＝開発用）を見る。
+         本番のつもりで実行すると、**開発用に別の人が作られるだけ**で
+         本番には何も起きない。だから本番では案内しない。 */
+      console.error("  **本番では npm run invite を使わないでください。**");
+      console.error("  これは .env.test.local（開発用）を見るため、開発用に作られてしまいます。");
+      console.error("");
+      console.error("  Supabase の画面から登録してください：");
+      console.error("    Authentication → Users → Add user → Send invitation");
+      console.error("  登録できたら、もう一度この命令を実行してください。");
+    }
     console.error("");
     process.exit(1);
   }
 
-  const role = remove ? "user" : "admin";
-  runSql(`update public.profiles set role = ${lit(role)} where id = ${lit(found.id)};`);
+  /* 打ち込んだ文字ではなく、**保存されている文字**を以後は使う。
+     取り違えていたときに、本人が画面で気づけるようにするため。 */
+  if (found.mail !== email) {
+    console.log(`  保存されているアドレス：${found.mail}`);
+    console.log("");
+  }
 
-  console.log(remove ? `  外しました：${email}` : `  管理者にしました：${email}`);
+  /* Auth には居るのに profiles の行が無いことへの備え。
+     ふだんは auth.users への追加と同時にトリガーが作るので、ここは通らない。
+     通るとしたら、その仕組みが無かった頃に作られた人だけ。
+
+     作るのは「すでに Auth に居る人」の行だけなので、新しい人は増えない。
+     role は既定の 'user' で入るので、この時点では権限は上がらない。 */
+  const [made] = runSql<{ id: string }>(`
+    insert into public.profiles (id, display_name)
+    select u.id, coalesce(u.raw_user_meta_data ->> 'display_name', '')
+    from auth.users u
+    where u.id = ${lit(found.id)}
+    on conflict (id) do nothing
+    returning id::text as id;`);
+  if (made) {
+    console.log("  profiles の行がなかったので、先に作りました。");
+    console.log("");
+  }
+
+  /* 本当に書けたかを確かめる。
+     returning で戻ってきた行が無ければ、書けていない。
+     ここを確かめないと、0件しか更新していなくても「しました」と出てしまう。 */
+  const role = remove ? "user" : "admin";
+  const changed = runSql<{ id: string }>(
+    `update public.profiles
+        set role = ${lit(role)}
+      where id = ${lit(found.id)}
+      returning id::text as id;`,
+  );
+  if (changed.length === 0) {
+    console.error("  中止：権限を書き込めませんでした（profiles の行が見つかりません）。");
+    console.error("  何も変わっていません。ご連絡ください。");
+    console.error("");
+    process.exit(1);
+  }
+
+  console.log(remove ? `  外しました：${found.mail}` : `  管理者にしました：${found.mail}`);
   console.log("");
   list();
   console.log("");
