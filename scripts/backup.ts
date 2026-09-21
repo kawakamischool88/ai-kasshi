@@ -43,10 +43,25 @@ function main() {
   mkdirSync(dir, { recursive: true });
   console.log(`バックアップ先：${dir}\n`);
 
+  /* 中身が空でも「成功」にしてよいか。
+     本当に空のDB（作りたて等）を控えるときだけ付ける。 */
+  const allowEmpty = process.argv.includes("--allow-empty");
+
   // いま反映されている migration の一覧（復元先を同じ形にするために要る）
   const migrations = runSql<{ version: string }>(
     "select version from supabase_migrations.schema_migrations order by version",
   ).map((r) => r.version);
+
+  /* 【空の控えを作らないための歯止め①】
+     migration は、どんなDBでも必ず1件以上ある。
+     ここが0件なら、DBが空なのではなく**読めていない**。
+     （2026-09-21、CLIの出力形式の違いで「読めない＝0件」になる不具合があった） */
+  if (migrations.length === 0) {
+    console.error("中止：migration の一覧が0件でした。");
+    console.error("  どんなDBでも必ず1件以上あるはずなので、読み取りに失敗しています。");
+    console.error("  控えは作りません（空の控えを作らないため）。");
+    process.exit(1);
+  }
 
   const tables: Record<string, number> = {};
   let totalRows = 0;
@@ -76,6 +91,17 @@ function main() {
     totalRows += rows.length;
     totalBytes += Buffer.byteLength(body, "utf8");
     console.log(`  ${table.padEnd(26)} ${String(rows.length).padStart(6)} 件`);
+  }
+
+  /* 【空の控えを作らないための歯止め②】
+     全部の表を合わせて0件なら、いったん止める。
+     本当に空のDBを控えたいときは --allow-empty を付ける。 */
+  if (totalRows === 0 && !allowEmpty) {
+    rmSync(dir, { recursive: true, force: true });
+    console.error("\n中止：すべての表が0件でした。作りかけのファイルは消しました。");
+    console.error("  読み取りに失敗している可能性があります（空の控えは最も危ない）。");
+    console.error("  本当に空のDBを控えるときは、末尾に --allow-empty を付けてください。");
+    process.exit(1);
   }
 
   const manifest = {
