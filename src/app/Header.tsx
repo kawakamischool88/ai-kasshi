@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { signOut } from "./actions";
+import { SubmitOnce } from "./SubmitOnce";
 
 /** 全画面共通の見出し。戻り先があるときは backHref を渡す */
 export function Header({ backHref }: { backHref?: string }) {
@@ -16,14 +17,13 @@ export function Header({ backHref }: { backHref?: string }) {
         <h1 className="text-2xl font-bold tracking-wide">AIカッシー</h1>
       )}
 
-      <form action={signOut}>
-        <button
-          type="submit"
-          className="min-h-12 rounded border border-line bg-white px-5 text-base hover:bg-neutral-100"
-        >
-          ログアウト
-        </button>
-      </form>
+      {/* 押した瞬間に鍵をかけ、「ログアウトしています…」を出す */}
+      <SubmitOnce
+        action={signOut}
+        label="ログアウト"
+        pendingLabel="ログアウトしています…"
+        className="min-h-12 rounded border border-line bg-white px-5 text-base hover:bg-neutral-100 disabled:opacity-60"
+      />
     </header>
   );
 }

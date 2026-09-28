@@ -44,6 +44,10 @@ export function RevisionCard({ proposal }: { proposal: RevisionProposal }) {
   const [done, setDone] = useState<Done | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+  /* どの操作を押したか。
+     「処理中かどうか」だけで文字を変えると、［やめる］を押したのに
+     ［消す］が「消しています…」になってしまうため、押した操作を覚えておく。 */
+  const [pressed, setPressed] = useState<"delete" | "cancel" | null>(null);
 
   const isDelete = proposal.intent === "delete";
 
@@ -63,6 +67,7 @@ export function RevisionCard({ proposal }: { proposal: RevisionProposal }) {
   function remove() {
     if (isPending) return;
     setError(null);
+    setPressed("delete");
     startTransition(async () => {
       const result = await deleteMemoryByRequest(proposal.id);
       if (result.ok) setDone({ kind: "deleted", removed: result.removed });
@@ -73,6 +78,7 @@ export function RevisionCard({ proposal }: { proposal: RevisionProposal }) {
   function cancel() {
     if (isPending) return;
     setError(null);
+    setPressed("cancel");
     startTransition(async () => {
       const result = await dismissRevisionRequest(proposal.id);
       if (result.ok) setDone({ kind: "dismissed" });
@@ -178,7 +184,7 @@ export function RevisionCard({ proposal }: { proposal: RevisionProposal }) {
             disabled={isPending}
             className="min-h-14 flex-1 rounded-xl bg-accent px-6 text-lg font-bold text-white disabled:opacity-50"
           >
-            {isPending ? "消しています…" : "消す"}
+            {isPending && pressed === "delete" ? "消しています…" : "消す"}
           </button>
           <button
             type="button"
@@ -186,9 +192,10 @@ export function RevisionCard({ proposal }: { proposal: RevisionProposal }) {
             disabled={isPending}
             className="min-h-14 rounded-xl border-2 border-line bg-white px-6 text-lg disabled:opacity-50"
           >
-            やめる
+            {isPending && pressed === "cancel" ? "処理しています…" : "やめる"}
           </button>
         </div>
+        <Waiting show={isPending} />
       </section>
     );
   }
@@ -290,6 +297,21 @@ export function RevisionCard({ proposal }: { proposal: RevisionProposal }) {
           そのままにする
         </button>
       </div>
+      <Waiting show={isPending} />
     </section>
+  );
+}
+
+/**
+ * 処理中の1行。
+ * 押すとボタンが薄くなるだけでは、明るい画面や iPad で気づきにくい。
+ * どの操作でも同じ言い方にする。
+ */
+function Waiting({ show }: { show: boolean }) {
+  if (!show) return null;
+  return (
+    <p className="m-0 mt-3 text-base text-neutral-700" role="status">
+      少しお待ちください…
+    </p>
   );
 }

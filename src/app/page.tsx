@@ -7,6 +7,7 @@ import { isAdmin } from "@/lib/auth/admin";
 import { formatDateTimeJst } from "@/lib/time";
 import { createConversation, expireOldCandidates } from "./actions";
 import { Header } from "./Header";
+import { SubmitOnce } from "./SubmitOnce";
 
 /** 会話の一覧。ここから新しく話し始めるか、過去の会話を開き直す */
 export default async function Home() {
@@ -68,14 +69,15 @@ export default async function Home() {
         </p>
       )}
 
-      <form action={createConversation} className="mt-8">
-        <button
-          type="submit"
-          className="min-h-16 w-full rounded bg-accent px-6 text-xl font-bold text-white hover:opacity-90"
-        >
-          新しく話す
-        </button>
-      </form>
+      {/* 押した瞬間に鍵をかける。二度押しで空の会話が2つできないようにする */}
+      <div className="mt-8">
+        <SubmitOnce
+          action={createConversation}
+          label="新しく話す"
+          pendingLabel="準備しています…"
+          className="min-h-16 w-full rounded bg-accent px-6 text-xl font-bold text-white hover:opacity-90 disabled:opacity-60"
+        />
+      </div>
 
       {/* 確認待ちの記憶があるときだけ入口を出す（Phase 3B） */}
       {(pendingCount ?? 0) > 0 && (

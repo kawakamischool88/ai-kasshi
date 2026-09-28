@@ -20,6 +20,8 @@ export function LoginForm() {
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
+  /** 照合に成功して、トップ画面へ移るのを待っているところ */
+  const [signingIn, setSigningIn] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
   async function sendCode(e: FormEvent) {
@@ -63,11 +65,16 @@ export function LoginForm() {
       type: "email",
     });
 
-    setBusy(false);
     if (error) {
+      setBusy(false);
       setMessage("コードが違うか、期限が切れています。もう一度お試しください。");
       return;
     }
+
+    /* 成功したときは、ボタンを元に戻さない（busy のまま）。
+       戻すと、トップ画面ができるまでの間にもう一度押せてしまい、
+       使い終わったコードで照合し直して「コードが違う」と出てしまうため。 */
+    setSigningIn(true);
     // Cookie が更新されたので、サーバー側の判定を効かせるため refresh する
     router.replace("/");
     router.refresh();
@@ -146,7 +153,7 @@ export function LoginForm() {
         disabled={busy}
         className="min-h-14 rounded bg-accent px-6 text-lg font-bold text-white disabled:opacity-60"
       >
-        {busy ? "確認しています…" : "ログインする"}
+        {signingIn ? "ログインしています…" : busy ? "確認しています…" : "ログインする"}
       </button>
       <button
         type="button"

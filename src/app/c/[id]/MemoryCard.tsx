@@ -23,10 +23,15 @@ export function MemoryCard({ candidate }: { candidate: Candidate }) {
   const [draft, setDraft] = useState(candidate.text);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+  /* どの操作を押したか。
+     「処理中かどうか」だけで文字を変えると、［残さない］を押したのに
+     ［残す］が「残しています…」になってしまうため、押した操作を覚えておく。 */
+  const [pressed, setPressed] = useState<"save" | "dismiss" | null>(null);
 
   function save(text?: string) {
     if (isPending) return;
     setError(null);
+    setPressed("save");
     startTransition(async () => {
       const result = await confirmMemory(candidate.id, text);
       // 保存できたときだけ「残しました」に切り替える
@@ -38,6 +43,7 @@ export function MemoryCard({ candidate }: { candidate: Candidate }) {
   function dismiss() {
     if (isPending) return;
     setError(null);
+    setPressed("dismiss");
     startTransition(async () => {
       const result = await rejectMemory(candidate.id);
       if (result.ok) setMode("dismissed");
@@ -120,7 +126,7 @@ export function MemoryCard({ candidate }: { candidate: Candidate }) {
               disabled={isPending}
               className="min-h-14 flex-1 rounded-xl bg-accent px-6 text-lg font-bold text-white disabled:opacity-50"
             >
-              {isPending ? "残しています…" : "残す"}
+              {isPending && pressed === "save" ? "残しています…" : "残す"}
             </button>
             <button
               type="button"
@@ -136,7 +142,7 @@ export function MemoryCard({ candidate }: { candidate: Candidate }) {
               disabled={isPending}
               className="min-h-14 rounded-xl border-2 border-line bg-white px-6 text-lg disabled:opacity-50"
             >
-              残さない
+              {isPending && pressed === "dismiss" ? "処理しています…" : "残さない"}
             </button>
           </>
         ) : (
@@ -147,7 +153,7 @@ export function MemoryCard({ candidate }: { candidate: Candidate }) {
               disabled={isPending || !draft.trim()}
               className="min-h-14 flex-1 rounded-xl bg-accent px-6 text-lg font-bold text-white disabled:opacity-50"
             >
-              {isPending ? "残しています…" : "これで残す"}
+              {isPending && pressed === "save" ? "残しています…" : "これで残す"}
             </button>
             <button
               type="button"
@@ -164,6 +170,14 @@ export function MemoryCard({ candidate }: { candidate: Candidate }) {
           </>
         )}
       </div>
+
+      {/* 押すとボタンが薄くなるだけでは、明るい画面や iPad で気づきにくい。
+          処理中は、どの操作でも同じ1行を出す */}
+      {isPending && (
+        <p className="m-0 mt-3 text-base text-neutral-700" role="status">
+          少しお待ちください…
+        </p>
+      )}
     </section>
   );
 }
