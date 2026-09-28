@@ -47,6 +47,7 @@ export function Chat({
 
   const boxRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
 
   /**
    * 送信中かどうかを、画面の作り直しを待たずに覚えておく印。
@@ -58,9 +59,22 @@ export function Chat({
    */
   const sendingRef = useRef(false);
 
-  // 新しいやりとりが増えたら一番下へ
+  /* 新しいやりとりが増えたら、最新のAIの返事の「先頭」を画面の上へ。
+     （「考えています…」のあいだは、その吹き出しの先頭へ）
+
+     以前は「会話の最後の端を画面の下端へ」合わせていた。
+     下端には入力エリアが貼り付いているため、最新の返事がちょうど
+     その裏に隠れてしまっていた（iPad では最初の返事から、PC でも会話が続くと）。
+     先頭に合わせれば、入力エリアの位置に関係なく、長い返事も上から読める。 */
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    const replies = listRef.current?.querySelectorAll<HTMLElement>('li[data-role="assistant"]');
+    const latest = replies && replies.length > 0 ? replies[replies.length - 1] : null;
+    if (latest) {
+      latest.scrollIntoView({ behavior: "smooth", block: "start" });
+    } else {
+      // まだAIの返事がない（返事を待たずに止まった等）ときは、これまでどおり最後へ
+      bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
   }, [messages.length, isPending]);
 
   const tooLong = draft.length > maxInputChars;
@@ -74,6 +88,12 @@ export function Chat({
     setPendingText(text);
     const clientRequestId = crypto.randomUUID();
 
+    /* 指で操作する端末（iPad 等）では、送った時点でキーボードを閉じる。
+       キーボードが出たままだと、見えている高さが入力エリアより小さくなり、
+       返事がまったく読めなくなるため。 */
+    const touch = isTouchPrimary();
+    if (touch) boxRef.current?.blur();
+
     startTransition(async () => {
       const result = await sendMessage({ conversationId, text, clientRequestId });
       if (result.ok) {
@@ -83,7 +103,8 @@ export function Chat({
       }
       setPendingText(null);
       sendingRef.current = false;
-      boxRef.current?.focus();
+      // PC では、続けて打てるよう入力欄へ戻す。指で操作する端末では戻さない（上と同じ理由）
+      if (!touch) boxRef.current?.focus();
     });
   }
 
@@ -108,7 +129,7 @@ export function Chat({
           </p>
         )}
 
-        <ul className="m-0 flex list-none flex-col gap-6 p-0">
+        <ul ref={listRef} className="m-0 flex list-none flex-col gap-6 p-0">
           {messages.map((m) => (
             <Bubble
               key={m.id}
@@ -173,8 +194,12 @@ export function Chat({
         </div>
       )}
 
-      {/* --- 入力 --- */}
-      <div className="sticky bottom-0 border-t border-line bg-background pt-4 pb-6">
+      {/* --- 入力 ---
+          マウス・トラックパッドで操作する端末（PC）だけ、画面の下に貼り付ける。
+          指で操作する端末（iPad 等）では貼り付けず、会話のあとに普通に並べる。
+          画面が低い iPad で、入力エリアが会話の上に重ならないようにするため。
+          画面の幅では分けない（iPad 横と PC の幅が近く、見分けられないため）。 */}
+      <div className="border-t border-line bg-background pt-4 pb-6 pointer-fine:sticky pointer-fine:bottom-0">
         <label htmlFor="draft" className="block font-bold">
           話したいこと
         </label>
@@ -213,6 +238,14 @@ export function Chat({
 }
 
 /**
+ * 指で操作するのが主な端末（iPad 等）か。
+ * 入力エリアの貼り付け（CSS の pointer-fine:）と同じ基準で判定する。
+ */
+function isTouchPrimary(): boolean {
+  return typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches;
+}
+
+/**
  * 発言の吹き出し。
  *
  * どちらの発言かを、色だけに頼らず3つの手がかりで示す。
@@ -238,7 +271,11 @@ function Bubble({
 }) {
   const mine = role === "user";
   return (
-    <li className={`flex flex-col ${mine ? "items-end" : "items-start"}`}>
+    <li
+      data-role={role}
+      /* scroll-mt-4 … 返事の先頭へスクロールしたとき、上に少し余白を残す */
+      className={`flex scroll-mt-4 flex-col ${mine ? "items-end" : "items-start"}`}
+    >
       <p className="m-0 mb-1 px-2 text-sm font-bold text-neutral-600">
         {mine ? "あなた" : "AIカッシー"}
       </p>
