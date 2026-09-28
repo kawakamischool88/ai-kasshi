@@ -78,6 +78,11 @@ export function MemoryCard({ candidate }: { candidate: Candidate }) {
       <h2 className="m-0 text-lg font-bold">
         {candidate.requested ? "この内容を、カッシーに残しますか？" : "カッシーに残しますか？"}
       </h2>
+      {/* 初めて見た人にも「残す」とどうなるかが分かるように。
+          「参考にする」は「残してある内容」の画面の説明とそろえてある */}
+      <p className="m-0 mt-2 text-base text-neutral-700">
+        残すと、これからの会話でカッシーが参考にします。あとから消すこともできます。
+      </p>
 
       {mode === "ask" ? (
         <p className="m-0 mt-3 whitespace-pre-wrap rounded-xl bg-background px-4 py-3 text-lg">

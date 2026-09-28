@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { normalizeOtp } from "@/lib/otp";
 
 type Step = "email" | "code";
 
@@ -43,13 +44,22 @@ export function LoginForm() {
 
   async function verifyCode(e: FormEvent) {
     e.preventDefault();
-    setBusy(true);
     setMessage(null);
 
+    /* 全角の数字・空白を整えてから照合する。
+       6桁の数字にならなければ、照合（Supabase への問い合わせ）はしない。
+       入力中には書き換えない（日本語入力の途中で書き換えると入力が壊れるため）。 */
+    const token = normalizeOtp(code);
+    if (!token) {
+      setMessage("メールに書かれている6桁の数字を入れてください。");
+      return;
+    }
+
+    setBusy(true);
     const supabase = createClient();
     const { error } = await supabase.auth.verifyOtp({
       email: email.trim(),
-      token: code.trim(),
+      token,
       type: "email",
     });
 
@@ -124,8 +134,10 @@ export function LoginForm() {
           required
           inputMode="numeric"
           autoComplete="one-time-code"
-          pattern="[0-9]{6}"
-          maxLength={6}
+          /* pattern は付けない。ブラウザが送信の前に判定するため、
+             全角の数字がこちらの処理に届く前に止められてしまう（判定は normalizeOtp で行う）。
+             maxLength は、空白入りで貼り付けても途中で切れないよう、6より広くしてある。 */
+          maxLength={20}
           className="min-h-14 rounded border border-line bg-white px-4 text-2xl tracking-[0.3em]"
         />
       </label>

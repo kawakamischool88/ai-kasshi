@@ -179,7 +179,7 @@ export function Chat({
           話したいこと
         </label>
         <p className="m-0 mt-1 text-sm text-neutral-600">
-          キーボードのマイクボタンから、声で入れることもできます。送る前に読み返せます。
+          声で入れるときは、iPadはキーボードのマイク、パソコンは音声入力を使います。送る前に読み返せます。
         </p>
         <textarea
           id="draft"
