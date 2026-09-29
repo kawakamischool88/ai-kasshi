@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { buildPdf } from "@/lib/pdf/build";
 import { isPdfPeriod } from "@/config/pdf";
+import { logEvent } from "@/lib/log";
 
 /**
  * 振り返りPDFの受け口（Phase 4C）。
@@ -47,10 +48,13 @@ export async function GET(request: NextRequest) {
   }
 
   const s = result.summary;
-  console.log(
-    `[振り返りPDF] ${s.periodLabel} 残した${s.kept}・変化${s.changed}・訂正${s.corrected} / ` +
-      `${s.bytes} バイト / ${s.durationMs} ミリ秒`,
-  );
+  logEvent("pdf.build", period === "last" ? "done_last_month" : "done_this_month", {
+    kept: s.kept,
+    changed: s.changed,
+    corrected: s.corrected,
+    bytes: s.bytes,
+    ms: s.durationMs,
+  });
 
   return new NextResponse(result.pdf as unknown as BodyInit, {
     status: 200,

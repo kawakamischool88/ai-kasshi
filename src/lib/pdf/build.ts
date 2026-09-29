@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { PdfPeriod } from "@/config/pdf";
 import { collectPdfContent, pdfSnapshot } from "./collect";
 import { pdfHasForbidden, renderPdf } from "./render";
+import { errName, logFailure, logWarn } from "@/lib/log";
 
 /**
  * 振り返りPDFを作る（Phase 4C）。
@@ -48,7 +49,7 @@ export async function buildPdf(
     // --- 入ってはいけない語が混ざっていないか ---
     const forbidden = pdfHasForbidden(pdf);
     if (forbidden) {
-      console.error(`[振り返りPDF] 入れてはいけない文字が混ざっています：${forbidden}`);
+      logWarn("pdf.build", "forbidden_word");
       return {
         ok: false,
         reason: "forbidden",
@@ -83,7 +84,8 @@ export async function buildPdf(
       },
     };
   } catch (e) {
-    console.error("[振り返りPDF] 想定外のエラー:", e);
+    // 例外の中身は出さず、種類の名前だけ
+    logFailure("pdf.build", { stage: "build", kind: "exception", code: errName(e) });
     return {
       ok: false,
       reason: "failed",

@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { BUDGET } from "@/config/ai";
 import { monthStartJst } from "@/lib/time";
+import { dbCode, logFailure } from "@/lib/log";
 
 /**
  * 原価の安全装置（二段階）。
@@ -57,7 +58,7 @@ export async function getBudgetStatus(
   if (error) {
     // 合計できないときは、安全側に倒して「停止」にはせず、警告として扱う。
     // （読み取り失敗でAIが使えなくなるのは、利用者にとって不便が大きすぎるため）
-    console.error("[budget] 集計に失敗:", error);
+    logFailure("budget.sum", { stage: "select", kind: "db", code: dbCode(error) });
     return {
       state: "warning",
       spentUsd: 0,

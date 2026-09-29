@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { dbCode, logFailure } from "@/lib/log";
 
 /**
  * ログイン中の本人が管理者（運営）かどうかを、**サーバー側で**確かめる。
@@ -21,7 +22,7 @@ export async function isAdmin(supabase: SupabaseClient): Promise<boolean> {
   const { data, error } = await supabase.rpc("is_admin");
 
   if (error) {
-    console.error("[admin] 権限の確認に失敗:", error);
+    logFailure("admin.check", { stage: "rpc", kind: "db", code: dbCode(error) });
     return false;
   }
   return data === true;

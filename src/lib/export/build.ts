@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import JSZip from "jszip";
+import { errName, logFailure, logWarn } from "@/lib/log";
 import {
   EXCLUSION_LABEL,
   EXPORT_FILES,
@@ -278,7 +279,8 @@ export async function buildExport(
 
     for (const word of FORBIDDEN_IN_EXPORT) {
       if (allText.includes(word)) {
-        console.error(`[書き出し] 入れてはいけない文字が混ざっています：${word}`);
+        // どの語かは一覧の番号で残す（語そのものも出さない）
+        logWarn("export.build", "forbidden_word", { index: FORBIDDEN_IN_EXPORT.indexOf(word) });
         return {
           ok: false,
           reason: "forbidden",
@@ -294,7 +296,7 @@ export async function buildExport(
         (m.text || m.aiSuggestedText || m.confirmedText),
     );
     if (leaked) {
-      console.error("[書き出し] 消した内容の本文が混ざっています");
+      logWarn("export.build", "deleted_text_found");
       return {
         ok: false,
         reason: "forbidden",
@@ -313,7 +315,7 @@ export async function buildExport(
     const uuids = allText.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g);
     for (const id of new Set(uuids ?? [])) {
       if (!known.has(id)) {
-        console.error("[書き出し] 見知らぬidが混ざっています");
+        logWarn("export.build", "unknown_id_found");
         return {
           ok: false,
           reason: "forbidden",
@@ -347,7 +349,8 @@ export async function buildExport(
       summary: { ...summaryCounts, bytes: bytes.length, durationMs: Date.now() - startedAt },
     };
   } catch (e) {
-    console.error("[書き出し] 想定外のエラー:", e);
+    // 例外の中身（DBのエラー文を包んだものを含む）は出さず、種類の名前だけ
+    logFailure("export.build", { stage: "build", kind: "exception", code: errName(e) });
     return {
       ok: false,
       reason: "failed",

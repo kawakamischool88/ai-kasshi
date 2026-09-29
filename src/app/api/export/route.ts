@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { buildExport } from "@/lib/export/build";
+import { logEvent } from "@/lib/log";
 
 /**
  * 本人向けデータ書き出しの受け口（Phase 4B）。
@@ -42,9 +43,7 @@ export async function GET() {
     );
   }
 
-  console.log(
-    `[書き出し] ${result.summary.bytes} バイト / ${result.summary.durationMs} ミリ秒`,
-  );
+  logEvent("export.build", "done", { bytes: result.summary.bytes, ms: result.summary.durationMs });
 
   return new NextResponse(result.zip as unknown as BodyInit, {
     status: 200,

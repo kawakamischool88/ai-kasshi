@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { REVISE, SEARCH } from "@/config/ai";
+import { dbCode, logFailure } from "@/lib/log";
 import {
   REVISION_SYSTEM_PROMPT,
   revisionContextBlock,
@@ -95,7 +96,7 @@ async function fetchPastForRevision(
     .limit(SEARCH.pastFetchLimit);
 
   if (error) {
-    console.error("[記憶の操作] 過去の考えの読み込みに失敗:", error);
+    logFailure("revision.load_past", { stage: "select", kind: "db", code: dbCode(error) });
     return [];
   }
   return (data ?? []).map((r) => ({

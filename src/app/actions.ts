@@ -13,6 +13,7 @@ import { isSaveRequest } from "@/config/memory-prompt";
 import { asksAboutPast, detectRevisionIntent } from "@/config/revision-prompt";
 import { isRestoreMode } from "@/config/mode";
 import { findRevisionTargets } from "@/lib/ai/memory-revise";
+import { aiCode, dbCode, errName, logEvent, logFailure, logWarn } from "@/lib/log";
 import {
   searchMemories,
   fetchUsedMemoriesInConversation,
@@ -56,7 +57,7 @@ export async function createConversation() {
     .single();
 
   if (error || !data) {
-    console.error("[createConversation]", error);
+    logFailure("conversation.create", { stage: "insert", kind: "db", code: dbCode(error) });
     redirect("/?error=create");
   }
 
@@ -118,8 +119,8 @@ async function recordUsage(supabase: SupabaseClient, row: UsageRow) {
     duration_ms: row.durationMs,
   });
 
-  // 記録に失敗しても会話は止めない。ただしログには必ず残す
-  if (error) console.error("[recordUsage] 記録できませんでした:", error);
+  // 記録に失敗しても会話は止めない。ただしログには必ず残す（番号だけ）
+  if (error) logFailure("usage.record", { stage: "insert", kind: "db", code: dbCode(error) });
 }
 
 // =============================================================
@@ -225,7 +226,7 @@ async function runTurn(
     .limit(AI.contextMessageCount);
 
   if (historyError) {
-    console.error("[runTurn] 会話の読み込みに失敗:", historyError);
+    logFailure("turn.load_history", { stage: "select", kind: "db", code: dbCode(historyError) });
     return { ok: false, message: friendlyMessage("api_error"), canRetry: true };
   }
 
@@ -265,7 +266,10 @@ async function runTurn(
       errorCode: c.ok ? null : c.errorCode,
       durationMs: c.durationMs,
     });
-    if (!c.ok) console.error("[記憶検索] 失敗（記憶なしで続行）:", c.errorCode, c.detail);
+    // 記憶なしで続行する。AIのエラー文（detail）はログへ出さない
+    if (!c.ok) {
+      logFailure("memory.search", { stage: "ai", kind: "ai", code: aiCode(c.errorCode), ms: c.durationMs });
+    }
   }
 
   /* この会話ですでに使った記憶は、引き続き渡す。
@@ -316,7 +320,8 @@ async function runTurn(
       errorCode: result.errorCode,
       durationMs: result.durationMs,
     });
-    console.error("[runTurn] AI呼び出し失敗:", result.errorCode, result.detail);
+    // AIのエラー文（detail）はログへ出さない。種類だけ
+    logFailure("turn.chat", { stage: "ai", kind: "ai", code: aiCode(result.errorCode), ms: result.durationMs });
     const canRetry = result.errorCode !== "no_api_key" && result.errorCode !== "auth";
     return { ok: false, message: friendlyMessage(result.errorCode), canRetry };
   }
@@ -343,7 +348,8 @@ async function runTurn(
       errorCode: "memory_changed_discarded",
       durationMs: result.durationMs,
     });
-    console.warn("[runTurn] 返事の作成中に記憶が変わったため、この返事は使いません");
+    // 返事の作成中に記憶が変わったため、この返事は使わない
+    logWarn("turn.memory_changed", "discarded");
     return {
       ok: false,
       message:
@@ -364,7 +370,7 @@ async function runTurn(
     .select("id")
     .single();
 
-  if (saveError) console.error("[runTurn] 返事の保存に失敗:", saveError);
+  if (saveError) logFailure("turn.save_reply", { stage: "insert", kind: "db", code: dbCode(saveError) });
 
   /* --- 出典の記録（Phase 3B） ---
      渡した記憶のうち、AIが**実際に使った**と申告したものだけを記録する。
@@ -446,9 +452,12 @@ async function recordMemoryReferences(
       memory_id: memoryId,
     }));
     const { error } = await supabase.from("memory_references").insert(rows);
-    if (error && error.code !== "23505") console.error("[出典] 記録に失敗:", error);
+    if (error && error.code !== "23505") {
+      logFailure("reference.record", { stage: "insert", kind: "db", code: dbCode(error) });
+    }
   } catch (e) {
-    console.error("[出典] 想定外のエラー（会話は成功のまま）:", e);
+    // 想定外のエラー（会話は成功のまま）。例外の中身は出さず、種類の名前だけ
+    logFailure("reference.record", { stage: "insert", kind: "exception", code: errName(e) });
   }
 }
 
@@ -512,7 +521,8 @@ async function extractAndSaveCandidates(
       .eq("source_message_id", sourceMessageId)
       .limit(1);
     if (deleted && deleted.length > 0) {
-      console.warn("[記憶候補] この発言から作った記憶は削除済みのため、作り直さない");
+      // この発言から作った記憶は削除済みのため、作り直さない
+      logEvent("candidate.skip_deleted_source", "skipped");
       return;
     }
 
@@ -554,7 +564,8 @@ async function extractAndSaveCandidates(
         errorCode: result.errorCode,
         durationMs: result.durationMs,
       });
-      console.error("[記憶候補] 取り出しに失敗:", result.errorCode, result.detail);
+      // AIのエラー文（detail）はログへ出さない。種類だけ
+      logFailure("memory.extract", { stage: "ai", kind: "ai", code: aiCode(result.errorCode), ms: result.durationMs });
       return; // 会話は成功のまま
     }
 
@@ -577,7 +588,8 @@ async function extractAndSaveCandidates(
     /* 本人がはっきり「覚えておいて」と言ったのに何も出てこなかったときは、
        本人の言葉そのものを候補にする（黙って何もしないことは避ける）。 */
     if (requested && candidates.length === 0 && lastUserText.trim()) {
-      console.warn("[記憶候補] 保存の希望があったが候補が0件。本人の発言をそのまま候補にする");
+      // 保存の希望があったが候補が0件。本人の発言をそのまま候補にする
+      logWarn("candidate.fallback_to_utterance", "fallback");
       candidates = [
         {
           text: lastUserText.trim().slice(0, 200),
@@ -605,11 +617,12 @@ async function extractAndSaveCandidates(
 
     const { error } = await supabase.from("memory_candidates").insert(rows);
     if (error && error.code !== "23505") {
-      // 23505 = 同じ発言から既に候補がある（二重実行）。それ以外は記録に残す
-      console.error("[記憶候補] 保存に失敗:", error);
+      // 23505 = 同じ発言から既に候補がある（二重実行）。それ以外は記録に残す（番号だけ）
+      logFailure("candidate.save", { stage: "insert", kind: "db", code: dbCode(error) });
     }
   } catch (e) {
-    console.error("[記憶候補] 想定外のエラー（会話は成功のまま）:", e);
+    // 想定外のエラー（会話は成功のまま）。例外の中身は出さず、種類の名前だけ
+    logFailure("candidate.save", { stage: "build", kind: "exception", code: errName(e) });
   }
 }
 
@@ -654,7 +667,7 @@ export async function sendMessage(input: {
       revalidatePath(`/c/${input.conversationId}`);
       return { ok: true };
     }
-    console.error("[sendMessage] 発言の保存に失敗:", insertError);
+    logFailure("send.save_user_message", { stage: "insert", kind: "db", code: dbCode(insertError) });
     return { ok: false, message: friendlyMessage("api_error"), canRetry: true };
   }
 
@@ -716,7 +729,7 @@ export async function expireOldCandidates(supabase: SupabaseClient) {
     })
     .eq("status", "pending")
     .lte("expires_at", new Date().toISOString());
-  if (error) console.error("[記憶候補] 期限切れの更新に失敗:", error);
+  if (error) logFailure("candidate.expire", { stage: "update", kind: "db", code: dbCode(error) });
 }
 
 /**
@@ -756,7 +769,7 @@ export async function confirmMemory(id: string, editedText?: string): Promise<Me
     .select("id, conversation_id");
 
   if (error) {
-    console.error("[記憶候補] 確定に失敗:", error);
+    logFailure("candidate.confirm", { stage: "update", kind: "db", code: dbCode(error) });
     return { ok: false, message: "うまく残せませんでした。もう一度お試しください。" };
   }
   if (!data || data.length === 0) {
@@ -793,7 +806,7 @@ export async function rejectMemory(id: string): Promise<MemoryResult> {
     .select("id, conversation_id");
 
   if (error) {
-    console.error("[記憶候補] 却下に失敗:", error);
+    logFailure("candidate.reject", { stage: "update", kind: "db", code: dbCode(error) });
     return { ok: false, message: "うまく処理できませんでした。もう一度お試しください。" };
   }
   if (!data || data.length === 0) {
@@ -866,7 +879,8 @@ async function findAndSaveRevisionRequests(
         durationMs: c.durationMs,
       });
       if (!c.ok) {
-        console.error("[記憶の操作] 対象探しに失敗（会話は成功のまま）:", c.errorCode, c.detail);
+        // 対象探しに失敗（会話は成功のまま）。AIのエラー文（detail）はログへ出さない
+        logFailure("revision.find", { stage: "ai", kind: "ai", code: aiCode(c.errorCode), ms: c.durationMs });
         return;
       }
     }
@@ -888,9 +902,12 @@ async function findAndSaveRevisionRequests(
 
     const { error } = await supabase.from("memory_revision_requests").insert(rows);
     // 23505 = 同じ発言から既に提案がある（二重実行）。それ以外は記録に残す
-    if (error && error.code !== "23505") console.error("[記憶の操作] 提案の保存に失敗:", error);
+    if (error && error.code !== "23505") {
+      logFailure("revision.save_request", { stage: "insert", kind: "db", code: dbCode(error) });
+    }
   } catch (e) {
-    console.error("[記憶の操作] 想定外のエラー（会話は成功のまま）:", e);
+    // 想定外のエラー（会話は成功のまま）。例外の中身は出さず、種類の名前だけ
+    logFailure("revision.save_request", { stage: "build", kind: "exception", code: errName(e) });
   }
 }
 
@@ -908,7 +925,7 @@ async function closeSiblingRequests(
     .eq("source_message_id", sourceMessageId)
     .eq("status", "pending")
     .neq("id", requestId);
-  if (error) console.error("[記憶の操作] 他の提案を閉じられませんでした:", error);
+  if (error) logFailure("revision.close_siblings", { stage: "update", kind: "db", code: dbCode(error) });
 }
 
 /** 提案を1件読む。自分のもので、まだ判断していないものだけ */
@@ -964,7 +981,7 @@ export async function applyRevision(input: {
   });
 
   if (error) {
-    console.error("[記憶の操作] 訂正・変化に失敗:", error);
+    logFailure("revision.apply", { stage: "rpc", kind: "db", code: dbCode(error) });
     return { ok: false, message: "うまく処理できませんでした。もう一度お試しください。" };
   }
   if (!newId) {
@@ -1002,7 +1019,7 @@ async function runDeleteMemory(supabase: SupabaseClient, memoryId: string): Prom
   const { data: removed, error } = await supabase.rpc("delete_memory", { target: memoryId });
 
   if (error) {
-    console.error("[記憶の操作] 削除に失敗:", error);
+    logFailure("memory.delete", { stage: "rpc", kind: "db", code: dbCode(error) });
     return { ok: false, message: "うまく消せませんでした。もう一度お試しください。" };
   }
   if (!removed) {
@@ -1070,7 +1087,7 @@ export async function dismissRevisionRequest(requestId: string): Promise<MemoryR
     .select("id");
 
   if (error) {
-    console.error("[記憶の操作] 取りやめに失敗:", error);
+    logFailure("revision.dismiss", { stage: "update", kind: "db", code: dbCode(error) });
     return { ok: false, message: "うまく処理できませんでした。もう一度お試しください。" };
   }
   if (!data || data.length === 0) return { ok: false, message: "この内容は、もう処理できません。" };
@@ -1093,7 +1110,7 @@ export async function deleteConversation(conversationId: string): Promise<Memory
   });
 
   if (error) {
-    console.error("[会話の削除] 失敗:", error);
+    logFailure("conversation.delete", { stage: "rpc", kind: "db", code: dbCode(error) });
     return { ok: false, message: "うまく消せませんでした。もう一度お試しください。" };
   }
 

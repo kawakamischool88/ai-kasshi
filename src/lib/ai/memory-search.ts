@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { SEARCH } from "@/config/ai";
+import { dbCode, logFailure, logWarn } from "@/lib/log";
 import { SEARCH_SYSTEM_PROMPT } from "@/config/search-prompt";
 import { EMPTY_USAGE, type UsageCounts } from "./cost";
 import type { ChatErrorCode } from "./anthropic";
@@ -125,7 +126,7 @@ async function fetchAllRows(
       .range(from, from + SEARCH.pageSize - 1);
 
     if (error) {
-      console.error(`[記憶検索] ${view} の読み込みに失敗:`, error);
+      logFailure("memory.search_load", { stage: "select", kind: "db", code: dbCode(error) });
       return { rows, truncated: true };
     }
 
@@ -135,7 +136,8 @@ async function fetchAllRows(
 
     from += SEARCH.pageSize;
     if (rows.length >= SEARCH.maxFetch) {
-      console.warn(`[記憶検索] ${view} が ${SEARCH.maxFetch} 件に達したため打ち切りました`);
+      // 読み切りの安全弁に達したため打ち切った
+      logWarn("memory.search_load", "truncated", { count: rows.length });
       return { rows, truncated: true };
     }
   }
@@ -302,7 +304,7 @@ async function liveVersions(
       .eq("user_id", userId)
       .in("id", ids);
     if (error) {
-      console.error("[記憶検索] いまの状態を確かめられませんでした:", error);
+      logFailure("memory.search_check", { stage: "select", kind: "db", code: dbCode(error) });
       return null;
     }
     for (const r of data ?? []) alive.set(r.id as string, (r.version as number) ?? 1);
