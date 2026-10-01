@@ -23,7 +23,10 @@
  * DB のトリガーで、PostgREST 経由（＝アプリやブラウザ）からは変えられない。
  * 変えられるのは、この命令のように postgres として入ったときだけ。
  */
-import { runSql, lit } from "./lib/db";
+import { runSql, lit, setSqlPurpose } from "./lib/db";
+
+// 管理者の一覧と、メールアドレスでの検索のため（運営者が自分で実行する命令）（Phase E）
+setSqlPurpose("account-lookup");
 import { linkedTarget } from "./lib/target";
 
 type Row = { email: string; role: string; id: string };

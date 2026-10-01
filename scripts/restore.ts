@@ -24,7 +24,9 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { BACKUP_TABLES, RESTORE_SCHEMA } from "../src/config/backup";
 import { runSql, ident } from "./lib/db";
-import { stopIfNotDev } from "./lib/target";
+import { linkedTarget, stopIfNotDev } from "./lib/target";
+import { deletedAccounts, readAllLedgers, USER_TABLES } from "./lib/ledger-apply";
+import { runMain } from "./lib/safe-run";
 
 loadEnv({ path: ".env.test.local", override: true });
 
@@ -53,7 +55,25 @@ function main() {
     createdAt: string;
     migrations: string[];
     tables: Record<string, number>;
+    target?: { kind?: string; name?: string };
   };
+
+  /* 控えの向き先と、いま戻す DB の向き先が違うときは止める（Phase D）。
+     例：本番の控えを開発用の DB へ戻すと、利用者のログイン情報が無いので入らず、台帳も合わない。
+     向き先が書かれていない古い控え（Phase D より前・開発用）は、注意を出して続ける。 */
+  const linked = linkedTarget();
+  if (manifest.target?.kind && manifest.target.kind !== linked.kind) {
+    console.error(`中止：控えの向き先（${manifest.target.kind}）と、いまの CLI の向き先（${linked.kind}）が違います。`);
+    process.exit(1);
+  }
+  if (!manifest.target?.kind) {
+    console.warn("注意：この控えの目録には向き先が書かれていません（Phase D より前の控え）。開発用として扱います。\n");
+  }
+
+  /* 完全に消した利用者（38日以内の台帳）の行は、戻さない（Phase D ／ R4）。
+     その人のログイン情報はもう無いので、戻そうとしても入らない。入れる前に除く。 */
+  const gone = deletedAccounts(readAllLedgers().accounts);
+  const userColumn = new Map(USER_TABLES.map((t) => [t.table, t.column]));
 
   console.log(`控えを取った日時：${manifest.createdAt}`);
   console.log(`控えのDBの版　　：${manifest.migrations.at(-1) ?? "（不明）"}`);
@@ -78,12 +98,19 @@ function main() {
   console.log("② データを流し込みます…");
   const statements: string[] = ["begin;", "set constraints all deferred;"];
   const counts: Record<string, number> = {};
+  let removedForAccounts = 0;
 
   for (const table of BACKUP_TABLES) {
     const file = path.join(base, `${table}.jsonl`);
-    const lines = existsSync(file)
+    const all = existsSync(file)
       ? readFileSync(file, "utf8").split("\n").filter((l) => l.trim())
       : [];
+    const column = userColumn.get(table);
+    const lines =
+      column && gone.size > 0
+        ? all.filter((l) => !gone.has(String((JSON.parse(l) as Record<string, unknown>)[column])))
+        : all;
+    removedForAccounts += all.length - lines.length;
     counts[table] = lines.length;
 
     for (let i = 0; i < lines.length; i += CHUNK) {
@@ -117,6 +144,9 @@ function main() {
     console.error("\n中止：件数が合いません。");
     process.exit(1);
   }
+  if (gone.size > 0) {
+    console.log(`\n  完全に消した利用者（38日以内の台帳 ${gone.size} 人）の行は戻していません：${removedForAccounts} 行`);
+  }
 
   console.log("\n戻しました。まだ利用を再開してはいけません。");
   console.log("  次： npm run restore:ledger   （消した・直した事実を当て直す）");
@@ -141,6 +171,10 @@ function buildSchemaSql(): string {
   const parts: string[] = [
     `drop schema if exists ${RESTORE_SCHEMA} cascade;`,
     `create schema ${RESTORE_SCHEMA};`,
+    /* 戻した日時を、場所そのものに書いておく（Phase C）。
+       点検で「戻したあとに有料のAI処理が走っていないか」を、この日時より後だけで数えるため。
+       （以前は「直近10分」で数えていて、控えを取った直後に戻すと、控えの中の記録を数えてしまっていた） */
+    `do $do$ begin execute format('comment on schema %I is %L', ${quote(RESTORE_SCHEMA)}, 'restored_at=' || now()::text); end $do$;`,
   ];
 
   // 表の形をそのまま写す
@@ -182,6 +216,9 @@ function buildSchemaSql(): string {
 
     alter table ${RESTORE_SCHEMA}.memory_deletions
       add constraint md_user_fk foreign key (user_id) references auth.users (id) on delete cascade;
+
+    alter table ${RESTORE_SCHEMA}.conversation_deletions
+      add constraint cd_user_fk foreign key (user_id) references auth.users (id) on delete cascade;
 
     alter table ${RESTORE_SCHEMA}.ai_usage
       add constraint au_user_fk foreign key (user_id) references auth.users (id) on delete cascade,
@@ -228,6 +265,24 @@ function buildSchemaSql(): string {
     $do$;
   `);
 
+  /* 決まり（ポリシー）が1つも無い表でも、いま動いている場所で RLS が入なら入にする
+     （例：実行記録の表は、決まりを作らず「誰も読めない」にしてある）。Phase C */
+  parts.push(`
+    do $do$
+    declare t record;
+    begin
+      for t in
+        select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace
+        where n.nspname = 'public' and c.relkind = 'r' and c.relrowsecurity
+      loop
+        if to_regclass(format('%I.%I', ${quote(RESTORE_SCHEMA)}, t.relname)) is not null then
+          execute format('alter table %I.%I enable row level security', ${quote(RESTORE_SCHEMA)}, t.relname);
+        end if;
+      end loop;
+    end
+    $do$;
+  `);
+
   // 権限も同じに（この場所はAPIに公開していないので、外からは触れない）
   parts.push(`
     do $do$
@@ -249,4 +304,5 @@ function buildSchemaSql(): string {
   return parts.join("\n");
 }
 
-main();
+// 失敗しても、本文を含みうる SQL のエラーの詳細は表示しない（Phase C）
+runMain(main);

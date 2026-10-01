@@ -1,0 +1,48 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(npm run account:delete *)",
+      "Bash(npm run account:delete)",
+      "Bash(npm run account:suspend *)",
+      "Bash(npm run account:suspend)",
+      "Bash(npm run account:verify-deleted *)",
+      "Bash(npm run recover:ledger *)",
+      "Bash(npm run recover:ledger)",
+      "Bash(npx supabase link *)",
+      "Bash(supabase link *)",
+      "Bash(npx vercel env pull *)",
+      "Bash(vercel env pull *)",
+      "Read(./backups/**)",
+      "Read(./.env)",
+      "Read(./.env.local)",
+      "Read(./.env.test.local)",
+      "Read(./.env.production)",
+      "Read(./.env.production.local)"
+    ],
+    "ask": [
+      "Bash(npx supabase db query *)",
+      "Bash(supabase db query *)",
+      "Bash(npx supabase db push *)",
+      "Bash(supabase db push *)",
+      "Bash(npm run db:push *)",
+      "Bash(npm run db:push)",
+      "mcp__terminal__read_terminal"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/prod-guard.mjs"],
+            "timeout": 10,
+            "statusMessage": "本番データの守りを確かめています"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -34,6 +34,8 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { prodSqlViolation, type SqlPurpose } from "./prod-guard";
+import { linkedTarget } from "./target";
 
 /**
  * CLI が返してくる形は2通りある（どちらも正常）。
@@ -112,8 +114,29 @@ export function parseQueryOutput<T = Record<string, unknown>>(r: CliResult): T[]
   throw new Error(`SQLの結果の形が分かりません：${String(parsed).slice(0, 200)}`);
 }
 
+/* 【本番では、本文を読む問い合わせを流さない】（Phase E ／ E2）
+   この命令が何のために SQL を流すか。既定は「件数・状態・日時だけ」（counts）。
+   本文を扱うこと自体が目的の命令（backup・ledger など）だけが、最初に setSqlPurpose() で名乗る。 */
+let purpose: SqlPurpose = "counts";
+
+export function setSqlPurpose(p: SqlPurpose): void {
+  purpose = p;
+}
+
+/** CLI が本番を向いているか（テストでは AI_KASSHI_TREAT_AS_PROD=1 で本番とみなして、守りを確かめる） */
+function linkedIsProd(): boolean {
+  return process.env.AI_KASSHI_TREAT_AS_PROD === "1" || linkedTarget().kind === "prod";
+}
+
 /** SQL を流して、返ってきた行を受け取る。読めなければ例外で止まる */
 export function runSql<T = Record<string, unknown>>(sql: string): T[] {
+  if (linkedIsProd()) {
+    const why = prodSqlViolation(sql, purpose);
+    if (why) {
+      // 流す前に止める。表示するのは理由（列の名前）だけ
+      throw new Error(`中止：本番では、本文を読む問い合わせは流せません（${why}）。件数・状態・日時だけの問い合わせにしてください。`);
+    }
+  }
   const dir = mkdtempSync(path.join(tmpdir(), "kasshi-sql-"));
   const file = path.join(dir, "q.sql");
   try {

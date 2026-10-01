@@ -27,21 +27,36 @@ import {
   FORBIDDEN_IN_BACKUP,
   NOT_BACKED_UP,
 } from "../src/config/backup";
-import { runSql, ident } from "./lib/db";
+import { runSql, ident, setSqlPurpose } from "./lib/db";
+import { backupRoot } from "./lib/paths";
+import { updateLedger } from "./lib/ledger-run";
+import { linkedTarget } from "./lib/target";
+import { runMain } from "./lib/safe-run";
 
 loadEnv({ path: ".env.test.local", override: true });
 
-const ROOT = path.resolve("backups");
+// ふだんは作業フォルダの backups/。テストでは AI_KASSHI_BACKUP_DIR で一時フォルダに切り替える（Phase C）
+const ROOT = backupRoot();
 
 function stamp(): string {
   return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
 function main() {
+  // 控えのファイルへ書くために、行を丸ごと読む（画面には件数だけ出す）（Phase E）
+  setSqlPurpose("backup");
   const startedAt = Date.now();
+  /* どの DB を控えるか（Phase D）。開発用か本番か分からないときは、控えを作らない
+     （目録に向き先が書けないと、30日の片付けで判断できなくなるため） */
+  const target = linkedTarget();
+  if (target.kind === "unknown") {
+    console.error(`中止：CLI がどの DB を向いているか分かりません（${target.label}）。npm run where で確かめてください。`);
+    process.exit(1);
+  }
   const dir = path.join(ROOT, stamp());
   mkdirSync(dir, { recursive: true });
-  console.log(`バックアップ先：${dir}\n`);
+  console.log(`バックアップ先：${dir}`);
+  console.log(`控える DB　　：${target.label}\n`);
 
   /* 中身が空でも「成功」にしてよいか。
      本当に空のDB（作りたて等）を控えるときだけ付ける。 */
@@ -107,6 +122,8 @@ function main() {
   const manifest = {
     formatVersion: BACKUP_FORMAT_VERSION,
     createdAt: new Date().toISOString(),
+    /** どの DB の控えか（Phase D）。開発用／本番と、人が読む名前・場所だけ。番号・URL・鍵は書かない */
+    target: { kind: target.kind, name: target.name, place: target.place },
     /** どの版のDBの形か。復元先は同じ版まで migration を流してから戻す */
     migrations,
     tables,
@@ -140,6 +157,12 @@ function main() {
   console.log(`\n合計 ${totalRows} 件 / ${(totalBytes / 1024).toFixed(1)} KB / ${seconds} 秒`);
   console.log("鍵・APIキーらしい文字は見つかりませんでした。");
   console.log(`\n目録：${path.join(dir, "manifest.json")}`);
+
+  /* 【控えと台帳は、必ず一緒に作る】（Phase D ／ R6）
+     控えだけ取って台帳を作り忘れると、控えのあとに本人が消したものを当て直せない。 */
+  console.log("\n続けて、台帳を更新します。\n");
+  updateLedger();
 }
 
-main();
+// 失敗しても、本文を含みうる SQL のエラーの詳細は表示しない（Phase C）
+runMain(main);
