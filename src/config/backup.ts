@@ -38,6 +38,20 @@ export const BACKUP_TABLES = [
 export type BackupTable = (typeof BACKUP_TABLES)[number];
 
 /**
+ * あとから migration で足した表と、その表を初めて作る migration（Phase F）。
+ *
+ * その migration がまだ DB に適用されていないときだけ、その表を控えから外す
+ * （例：本番へ migration を当てる前に、控えを取るとき）。
+ * migration が適用済みなのに表が無ければ、異常なので控えを作らずに止まる。
+ * ここに無い表は、最初からある表として、いつも必ず控える。
+ * **表を足す migration を作ったら、ここにも足すこと**（tests/backup-plan.test.ts が突き合わせる）。
+ */
+export const TABLE_INTRODUCED_BY: Partial<Record<BackupTable, string>> = {
+  conversation_deletions: "20260929000001",
+  maintenance_runs: "20260929000002",
+};
+
+/**
  * 控えない表と、その理由。
  *
  * 「なぜ入っていないのか」をあとから確かめられるよう、理由まで残す。

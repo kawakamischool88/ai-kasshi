@@ -22,12 +22,12 @@ import { config as loadEnv } from "dotenv";
 import { mkdirSync, writeFileSync, readFileSync, rmSync, readdirSync } from "node:fs";
 import path from "node:path";
 import {
-  BACKUP_TABLES,
   BACKUP_FORMAT_VERSION,
   FORBIDDEN_IN_BACKUP,
   NOT_BACKED_UP,
 } from "../src/config/backup";
 import { runSql, ident, setSqlPurpose } from "./lib/db";
+import { planTables, readMigrationState } from "./lib/backup-plan";
 import { backupRoot } from "./lib/paths";
 import { updateLedger } from "./lib/ledger-run";
 import { linkedTarget } from "./lib/target";
@@ -62,10 +62,9 @@ function main() {
      本当に空のDB（作りたて等）を控えるときだけ付ける。 */
   const allowEmpty = process.argv.includes("--allow-empty");
 
-  // いま反映されている migration の一覧（復元先を同じ形にするために要る）
-  const migrations = runSql<{ version: string }>(
-    "select version from supabase_migrations.schema_migrations order by version",
-  ).map((r) => r.version);
+  // いま反映されている migration の一覧（復元先を同じ形にするために要る）と、控える表のうち実際にある表
+  const state = readMigrationState();
+  const migrations = state.applied;
 
   /* 【空の控えを作らないための歯止め①】
      migration は、どんなDBでも必ず1件以上ある。
@@ -78,14 +77,21 @@ function main() {
     process.exit(1);
   }
 
+  /* どの表を控えるか（Phase F）。その表を作る migration がまだ当たっていない表だけ外す。
+     migration が当たっているのに表が無ければ、ここで止まる（中身の欠けた控えを作らない） */
+  const plan = planTables(state.applied, state.existing);
+  for (const s of plan.skipped) {
+    console.log(`  ${s.table.padEnd(26)}   外す … ${s.reason}`);
+  }
+
   const tables: Record<string, number> = {};
   let totalRows = 0;
   let totalBytes = 0;
 
-  /* すべての表を1回のやりとりでまとめて取り出す。
+  /* 控える表を1回のやりとりでまとめて取り出す。
      表ごとに1回ずつ聞くと、つなぎ直しに時間がかかるため。
      並びを id で固定して、毎回同じ順序になるようにする（見比べやすい）。 */
-  const union = BACKUP_TABLES.map(
+  const union = plan.include.map(
     (t) => `select '${t}' as tbl, to_jsonb(x) as row, x.id::text as sort_id from public.${ident(t)} x`,
   ).join("\nunion all\n");
   const all = runSql<{ tbl: string; row: unknown }>(
@@ -93,10 +99,10 @@ function main() {
   );
 
   const byTable = new Map<string, unknown[]>();
-  for (const t of BACKUP_TABLES) byTable.set(t, []);
+  for (const t of plan.include) byTable.set(t, []);
   for (const r of all) byTable.get(r.tbl)?.push(r.row);
 
-  for (const table of BACKUP_TABLES) {
+  for (const table of plan.include) {
     const rows = byTable.get(table) ?? [];
     const body = rows.map((r) => JSON.stringify(r)).join("\n") + (rows.length ? "\n" : "");
     const file = path.join(dir, `${table}.jsonl`);
@@ -127,6 +133,10 @@ function main() {
     /** どの版のDBの形か。復元先は同じ版まで migration を流してから戻す */
     migrations,
     tables,
+    /** 外した表と理由（Phase F）。表の名前・migration の番号・理由だけ。空なら全部の表を控えた */
+    skippedTables: plan.skipped,
+    /** テストで「migration を当てる前」をまねたときだけ入る（開発用でだけ使える） */
+    ...(state.hidden.length ? { testHiddenMigrations: state.hidden } : {}),
     totalRows,
     totalBytes,
     /** 控えていないものと、その理由 */
@@ -161,7 +171,7 @@ function main() {
   /* 【控えと台帳は、必ず一緒に作る】（Phase D ／ R6）
      控えだけ取って台帳を作り忘れると、控えのあとに本人が消したものを当て直せない。 */
   console.log("\n続けて、台帳を更新します。\n");
-  updateLedger();
+  updateLedger(state);
 }
 
 // 失敗しても、本文を含みうる SQL のエラーの詳細は表示しない（Phase C）

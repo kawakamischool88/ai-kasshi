@@ -10,13 +10,20 @@
  * 実行する（開発用のAIツールには付けさせない）。
  */
 
+/** DB のエラーの番号の正しい形：英大文字と数字の5文字で、数字を必ず含む（例 42P01・23514・P0001・XX000） */
+const SQLSTATE_SHAPE = /^(?=[A-Z]*[0-9])[0-9A-Z]{5}$/;
+
 /** エラーの文から、DB のエラーの番号（5文字）だけを探す。見つからなければ null */
 export function sqlStateOf(message: string): string | null {
   const m =
     message.match(/SQLSTATE[\s:=]*([0-9A-Z]{5})\b/) ??
     message.match(/"code"\s*:\s*"([0-9A-Z]{5})"/) ??
-    message.match(/\(SQLSTATE ([0-9A-Z]{5})\)/);
-  return m ? m[1] : null;
+    message.match(/\(SQLSTATE ([0-9A-Z]{5})\)/) ??
+    // Supabase CLI が「ERROR: 42P01: relation … does not exist」の形で返すとき（Phase F）
+    message.match(/\bERROR:\s+([0-9A-Z]{5}):/);
+  const code = m ? m[1] : null;
+  // 5文字の正しい形だけを返す（「ERROR: FATAL: …」のような語を番号と取り違えない）
+  return code && SQLSTATE_SHAPE.test(code) ? code : null;
 }
 
 /** 本文を含みうるエラーを、表示してよい1行にする */

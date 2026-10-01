@@ -508,6 +508,12 @@ RLS の条件の中で `memory_candidates` を読むと無限に回ってしま�
 足し忘れると、復元したときに**その表だけ空**になる（件数は合って見えるので気づきにくい）。
 `tests/backup.test.ts` が、DBの表と一覧を突き合わせて止める。
 
+**表を migration で足したときは、`TABLE_INTRODUCED_BY` にも「表 → その表を作る migration」を足す**（Phase F）。
+その migration をまだ当てていない DB（例：migration を当てる前の本番）では、その表だけを控えから外し、
+目録の `skippedTables` に理由を書く。migration が当たっているのに表が無ければ止まる。
+足し忘れると、migration 前の本番で backup が全部失敗する（2026-10-01 に実際に起きた）。
+`tests/backup-plan.test.ts` が migration のファイルと突き合わせる。
+
 ### 控えに鍵を入れない
 
 `FORBIDDEN_IN_BACKUP` の語が混ざっていないか、作るたびに調べる。

@@ -30,6 +30,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { LEDGERS, LEDGER_FORMAT_VERSION } from "../../src/config/backup";
 import { runSql } from "./db";
+import { planTables, readMigrationState, type MigrationState } from "./backup-plan";
 import { ledgerDir } from "./paths";
 import {
   appendNewRows,
@@ -54,8 +55,11 @@ function assertNoTextColumns(label: string, rows: Row[]) {
   }
 }
 
-/** 台帳を更新する（npm run ledger と npm run backup の両方から呼ぶ） */
-export function updateLedger(): void {
+/**
+ * 台帳を更新する（npm run ledger と npm run backup の両方から呼ぶ）。
+ * @param state DB の migration の状態（backup が読んだものを渡す。無ければここで読む）
+ */
+export function updateLedger(state: MigrationState = readMigrationState()): void {
   const DIR = ledgerDir();
   mkdirSync(DIR, { recursive: true });
   const now = new Date().toISOString();
@@ -72,12 +76,16 @@ export function updateLedger(): void {
   const addedDeletions = appendNewRows(path.join(DIR, d.file), d.key, deletions);
 
   // ---------- ② 会話の削除（本文・見出しなし） ----------
+  /* この表を作る migration（Phase A）が未適用の DB では、表も記録もまだ無いので飛ばす（Phase F）。
+     適用済みなのに表が無ければ、planTables が止める */
   const cd = LEDGERS.conversationDeletions;
-  const convDeletions = runSql<Row>(
-    `select ${cd.fields.join(", ")} from public.conversation_deletions order by deleted_at`,
-  ).map(stamp);
+  const convPlan = planTables(state.applied, state.existing, ["conversation_deletions"]);
+  const convSkipped = convPlan.skipped[0] ?? null;
+  const convDeletions = convSkipped
+    ? []
+    : runSql<Row>(`select ${cd.fields.join(", ")} from public.conversation_deletions order by deleted_at`).map(stamp);
   assertNoTextColumns("会話の削除の台帳", convDeletions);
-  const addedConv = appendNewRows(path.join(DIR, cd.file), cd.key, convDeletions);
+  const addedConv = convSkipped ? 0 : appendNewRows(path.join(DIR, cd.file), cd.key, convDeletions);
 
   // ---------- ③ ［残さない］の判断（本文・理由なし） ----------
   const cl = LEDGERS.closures;
@@ -140,7 +148,11 @@ export function updateLedger(): void {
 
   console.log(`台帳の場所：${DIR}`);
   console.log(`  記憶の削除　　　 いまDBに ${deletions.length} 件 ／ 台帳へ新たに ${addedDeletions} 件`);
-  console.log(`  会話の削除　　　 いまDBに ${convDeletions.length} 件 ／ 台帳へ新たに ${addedConv} 件`);
+  console.log(
+    convSkipped
+      ? `  会話の削除　　　 飛ばしました … ${convSkipped.reason}（表がまだ無く、記録も無い）`
+      : `  会話の削除　　　 いまDBに ${convDeletions.length} 件 ／ 台帳へ新たに ${addedConv} 件`,
+  );
   console.log(`  ［残さない］　　 いまDBに ${closures.length} 件 ／ 台帳へ新たに ${addedClosures} 件`);
   console.log(`  訂正・考えの変化 いまDBに ${revisions.length} 件 ／ 台帳へ新たに ${addedRevisions} 件`);
   console.log(`  消した系列の本文を変更台帳から消した：${scrubbed} 件`);
